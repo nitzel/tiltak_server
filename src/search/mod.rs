@@ -39,6 +39,23 @@ pub struct MctsSetting<const S: usize> {
     rollout_temperature: f64,
 }
 
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Clone)]
+pub struct MoveInfo {
+    pub mv: String,
+    // Winning probability for white
+    pub winning_probability: f32,
+    // suggested follow up moves
+    pub pv: Vec<String>,
+    pub visits: u64,
+}
+
+impl ToString for MoveInfo {
+    fn to_string(&self) -> String {
+        return format!("{} {}% pv {}", self.mv, self.winning_probability * 100., self.pv.join(" ").to_string())
+    }
+}
+
 impl<const S: usize> Default for MctsSetting<S> {
     fn default() -> Self {
         MctsSetting {
@@ -327,6 +344,24 @@ impl<const S: usize> MonteCarloTree<S> {
 
     pub fn pv(&self) -> impl Iterator<Item = Move> + '_ {
         Pv::new(&self.edge, &self.arena)
+    }
+
+    pub fn best_children_info(&self, n: usize) -> Vec<MoveInfo> {
+        // TODO: Figure out how to prevent out of memory/crash when n too big
+        let child = self.get_child();
+        let mut best_children: Vec<&TreeEdge> =
+            self.arena.get_slice(&child.children).iter().collect();
+        best_children.sort_by_key(|edge| edge.visits);
+        best_children.reverse();
+
+        let is_white = self.position.half_moves_played() % 2 == 0;
+        let n = std::cmp::min(n, best_children.len());
+        best_children.iter().take(n).map(|edge| MoveInfo {
+            mv: edge.mv.to_string::<S>(),
+            visits: edge.visits,
+            winning_probability: match is_white { true => 1. - edge.mean_action_value, false => edge.mean_action_value },
+            pv: Pv::new(edge, &self.arena).map(|mv| mv.to_string::<S>() + " ").collect(),
+        }).collect()
     }
 
     /// Print human-readable information of the search's progress.

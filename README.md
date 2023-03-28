@@ -58,6 +58,13 @@ position startpos moves e1 a1
 go movetime 1000
 ````
 
+## API Server
+Intended to be hooked up with the openings explorer.
+
+```sh
+cargo run --release --bin web_api --features web-api -- --help
+```
+
 ## tune
 To build and run this binary:
 ```
