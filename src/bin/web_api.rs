@@ -33,7 +33,6 @@ impl From<&MoveInfo> for PtnMoveResult {
 pub struct OpeningResult {
     black: isize,
     white: isize,
-    // games: Vec<> // unused
     moves: Vec<PtnMoveResult>,
 
     _debug: Vec<MoveInfo>, // do not rely on this
@@ -52,7 +51,6 @@ impl From<&Vec<MoveInfo>> for OpeningResult {
         }
     }
 }
-
 /**
  * Determines the size from a tps string.
  * [TPS](https://ustak.org/tak-positional-system-tps/) separtes rows with `/` and columns with `,`.
@@ -67,6 +65,17 @@ fn determine_tps_size(tps: &str) -> usize{
         }
         return column_count + 1;
     })
+}
+
+fn cors(response: rouille::Response) -> rouille::Response{
+    response
+        .with_additional_header("Access-Control-Allow-Origin", "*")
+        .with_additional_header("Access-Control-Allow-Methods", "*")
+        .with_additional_header("Access-Control-Allow-Headers", "*")
+}
+
+fn response_text(text: &str) -> rouille::Response{
+    cors(rouille::Response::text(text))
 }
 
 fn main() {
@@ -120,7 +129,7 @@ fn main() {
     rouille::start_server(host_address, move |request| {
         rouille::router!(request,
             (GET) (/api/v1/ping) => {
-                rouille::Response::text("pong")
+                response_text("pong")
             },
             (GET) (/api/v1/best_move/{tps: String}) => {
                 let komi: Option<f32> = request.get_param("komi").and_then(|s|s.parse::<f32>().ok());
@@ -135,17 +144,15 @@ fn main() {
                     match move_count_str.parse() {
                         Ok(n) => move_count = n,
                         Err(err) => {
-                            return rouille::Response::text(
-                                format!("Failed to parse count '{}': {:?}", move_count_str, err))
-                                .with_status_code(400);
+                            return response_text(&format!("Failed to parse count '{}': {:?}", move_count_str, err))
+                                .with_status_code(400)
                         }
                     };
                 } else {
                     move_count = default_move_count;
                 }
                 if move_count > max_move_count {
-                    return rouille::Response::text(
-                        format!("Move count {} is too high, please choose <= {}", move_count, max_move_count))
+                    return response_text(&format!("Move count {} is too high, please choose <= {}", move_count, max_move_count))
                         .with_status_code(400);
                 }
 
@@ -159,9 +166,9 @@ fn main() {
                 let best_children_info = best_children.iter().map(|x|x.to_string()).collect::<Vec<String>>().join("\n");
                 println!("{}", best_children_info);
 
-                rouille::Response::json(&OpeningResult::from(&best_children))
+                cors(rouille::Response::json(&OpeningResult::from(&best_children)))
             },
-            _ => rouille::Response::text("no such thing, try /api/v1/best_move/{tps}?komi=2").with_status_code(404)
+            _ => response_text("no such thing, try /api/v1/best_move/{tps}?komi=2&count=5").with_status_code(404)
         )
     });
 }
@@ -184,8 +191,9 @@ fn analyze_position_from_tps<const S: usize>(komi: Komi, timeout_sec: f64, tps: 
 }
 
 fn analyze_position<const S: usize>(position: &Position<S>, timeout_sec: Option<f64>, move_count: usize) -> Vec<MoveInfo> {
-    // TODO: Handle errors with HTTP response/return Result
-    assert_eq!(position.game_result(), None, "Cannot analyze finished game");
+    if position.game_result() != None { // game over
+        return vec![];
+    }
 
     let group_data = position.group_data();
 
@@ -220,7 +228,7 @@ fn analyze_position<const S: usize>(position: &Position<S>, timeout_sec: Option<
     position.features_for_moves(&mut policy_feature_sets, &simple_moves, &group_data);
 
     let settings: MctsSetting<S> = search::MctsSetting::default()
-        .arena_size(2_u32.pow(31))
+        .arena_size(2_u32.pow(26)) // 2**26 equals 1.5GB max according to Morten
         .exclude_moves(vec![]);
 
     let mut tree = search::MonteCarloTree::with_settings(position.clone(), settings);
