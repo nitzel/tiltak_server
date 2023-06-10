@@ -766,6 +766,7 @@ impl PlaytakSession {
                             let aws_function_name = self.aws_function_name.as_ref().unwrap();
                             let start_time = Instant::now();
                             let event = aws::Event {
+                                action: search::Action::SuggestMove,
                                 size: S,
                                 tps: None,
                                 moves: moves
@@ -778,17 +779,21 @@ impl PlaytakSession {
                                 rollout_depth: playtak_settings.rollout_depth,
                                 rollout_temperature: playtak_settings.rollout_temperature,
                             };
-                            let aws::Output { pv, score, nodes, mem_usage, time_taken } =
-                                aws::client::best_move_aws(aws_function_name, &event)?;
 
-                            debug!("{} nodes, {}MB, {:.1}s taken, {}ms overhead",
-                                nodes,
-                                mem_usage / (1024 * 1024),
-                                time_taken.as_secs_f32(),
-                                (start_time.elapsed() - time_taken).as_millis()
-                            );
+                            let response = aws::client::best_move_aws(aws_function_name, &event)?;
+                            if let aws::Output::SuggestMove { pv, score, nodes, mem_usage, time_taken } = response {
+                                debug!("{} nodes, {}MB, {:.1}s taken, {}ms overhead",
+                                    nodes,
+                                    mem_usage / (1024 * 1024),
+                                    time_taken.as_secs_f32(),
+                                    (start_time.elapsed() - time_taken).as_millis()
+                                );
 
-                            (position.move_from_san(&pv[0]).unwrap(), score)
+                                (position.move_from_san(&pv[0]).unwrap(), score)
+                            }
+                            else {
+                                panic!("Response wasn't of type `SuggestMove` {:?}", response)
+                            }
                         }
 
                         #[cfg(not(feature = "aws-lambda-client"))]

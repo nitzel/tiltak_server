@@ -1,4 +1,4 @@
-use crate::position::Position;
+use crate::Position;
 use board_game_traits::Position as PositionTrait;
 use pgn_traits::PgnPosition;
 use tiltak::position::Move;

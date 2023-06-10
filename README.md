@@ -2,25 +2,25 @@
 
 ![](https://img.shields.io/github/license/MortenLohne/Tiltak) ![](https://img.shields.io/github/workflow/status/MortenLohne/Tiltak/Actions)
 
-Tiltak is an AI for the board game [Tak](https://en.wikipedia.org/wiki/Tak_(game)). The project can be used as an analysis tool, or connect as a playable bot to the playtak.com server. 
+Tiltak is an AI for the board game [Tak](https://en.wikipedia.org/wiki/Tak_(game)). The project can be used as an analysis tool, or connect as a playable bot to the playtak.com server.
 
 It is most likely the strongest bot available. In a 2000-game match against [Taktician](https://github.com/nelhage/taktician), which was previously regarded as the strongest, it won 1276 games and lost 684.
 
-The core engine is built using [Monte Carlo Tree Search](https://en.wikipedia.org/wiki/Monte_Carlo_tree_search), but without full simulation rollouts. This is similar to the implementation in AlphaZero or Leela Zero. 
+The core engine is built using [Monte Carlo Tree Search](https://en.wikipedia.org/wiki/Monte_Carlo_tree_search), but without full simulation rollouts. This is similar to the implementation in AlphaZero or Leela Zero.
 
-It prunes the search tree very aggressively while searching, and will quickly reach depths of 10+ moves in the longest lines. On the other hand, it may also miss 2-move winning sequences, even with significant thinking time. 
+It prunes the search tree very aggressively while searching, and will quickly reach depths of 10+ moves in the longest lines. On the other hand, it may also miss 2-move winning sequences, even with significant thinking time.
 
 # Overview
 
 The project consists of 5 different binaries, that use the core engine in various ways:
- 
+
  * **main** Various commands, mostly for debugging and experimentation.
  * **playtak** Connect to the `playtak.com` server, and seek games as a bot.
  * **tei** Run the engine through Tak Engine Interface, a [uci-like](https://en.wikipedia.org/wiki/Universal_Chess_Interface) text interface.
- * **tune** Automatically tune the engine's parameters. 
+ * **tune** Automatically tune the engine's parameters.
  * **bootstrap** Engine worker for running on AWS Lambda.
- 
- The first 3 binaries will be built by default, while `tune` and `bootstrap` require specific commands, see their sections. 
+
+ The first 3 binaries will be built by default, while `tune` and `bootstrap` require specific commands, see their sections.
 
 # Usage
 
@@ -36,7 +36,7 @@ Five experimental commands entered through stdin:
 
 ## playtak
 
-Connect to the playtak.com server, and seek games as a bot. If no username/password is provided, the bot will login as guest. 
+Connect to the playtak.com server, and seek games as a bot. If no username/password is provided, the bot will login as guest.
 
 At the time of writing, three bots based on this project are running on Playtak. They are configured as follows:
 ````
@@ -45,7 +45,7 @@ playtak -s 6 --tc 600+20 --rollout-depth 200 --rollout-noise low -u SlateBot -p 
 playtak -s 5 --tc 900+30 --fixed-nodes 100 --policy-noise medium --rollout-depth 200 --rollout-noise low -u CobbleBot -p <password> -l cobble.log
 ````
 
-## tei 
+## tei
 
 Run the engine through Tak Engine Interface, a [uci-like](https://en.wikipedia.org/wiki/Universal_Chess_Interface) text interface.
 
@@ -72,18 +72,71 @@ cargo build --release --features "constant-tuning" --bin tune
 cargo run --release --features "constant-tuning" --bin tune
 ```
 
-Automatically tune the engine's parameters through several subcommands. 
+Automatically tune the engine's parameters through several subcommands.
 
-The engine's static evaluation (value parameters) and move evaluation (policy parameters) are tuned from a `.ptn` file, using gradient descent. The search exploration parameters are tuned using [SPSA.](https://en.wikipedia.org/wiki/Simultaneous_perturbation_stochastic_approximation) 
+The engine's static evaluation (value parameters) and move evaluation (policy parameters) are tuned from a `.ptn` file, using gradient descent. The search exploration parameters are tuned using [SPSA.](https://en.wikipedia.org/wiki/Simultaneous_perturbation_stochastic_approximation)
 
-This is otherwise not well documented, try `tune --help` for more. 
+This is otherwise not well documented, try `tune --help` for more.
 
-## bootstrap 
+## bootstrap
 To build this binary:
 ```
 cargo build --release --target x86_64-unknown-linux-musl --bin bootstrap --features aws-lambda-runtime
 ```
 This is otherwise undocumented.
+
+```sh
+# build
+cargo lambda build --release --arm64 --bin bootstrap --features aws-lambda-runtime
+# consider appending --output-format zip
+
+# zip
+# upload to aws lambda
+
+```
+ go to test and paste some json (see `Event` in `src/aws/mod.rs`)
+
+```rs
+pub struct Event {
+    pub size: usize,
+    pub tps: Option<String>,
+    pub moves: Vec<String>,
+    pub time_control: TimeControl,
+    pub komi: f64,
+    pub dirichlet_noise: Option<f32>,
+    pub rollout_depth: u16,
+    pub rollout_temperature: f64,
+}
+```
+
+```json
+{
+  "komi": 2,
+  "size": 6,
+  "tps": "2,x5/x6/x2,2,2,2,2/x,1,1,1,1,1/x6/1,x5 2 6",
+  "moves": [],
+  "time_control": { "FixedNodes": 100000 },
+  "rollout_depth": 0,
+  "rollout_temperature": 0.20, // low
+  "action": "SuggestMoves" // or "SuggestMove"
+}
+```
+
+### Testing
+In theory the following should start a server listening for the lambda invocations
+and the second line should invoke the lambda function. For some reason on my PC that doesn't work.
+```sh
+cargo lambda watch -p 9000 --release --features aws-lambda-runtime
+cargo lambda invoke bootstrap --data-ascii '{
+  "komi": 2,
+  "size": 6,
+  "tps": "2,x5/x6/x2,2,2,2,2/x,1,1,1,1,1/x6/1,x5 2 6",
+  "moves": [],
+  "time_control": { "FixedNodes": 10 },
+  "rollout_depth": 1,
+  "rollout_temperature": 0.25, "action": "SuggestMoves",
+}'
+```
 
 # Build
 

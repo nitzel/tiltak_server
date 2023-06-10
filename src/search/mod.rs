@@ -27,6 +27,15 @@ pub enum TimeControl {
     Time(time::Duration, time::Duration), // Total time left, increment
 }
 
+
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Debug, PartialEq, Clone)]
+pub enum Action {
+    SuggestMove,
+    SuggestMoves,
+    // AnalyzeMoves (pv and % for each move?)
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct MctsSetting<const S: usize> {
     arena_size: u32,
@@ -39,8 +48,8 @@ pub struct MctsSetting<const S: usize> {
     rollout_temperature: f64,
 }
 
-#[cfg_attr(feature = "serde", derive(Serialize))]
-#[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug)]
 pub struct MoveInfo {
     pub mv: String,
     // Winning probability for white

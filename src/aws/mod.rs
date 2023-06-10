@@ -3,7 +3,8 @@ use std::time;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::search::TimeControl;
+use crate::search::{ TimeControl, Action };
+use crate::search::MoveInfo;
 
 #[cfg(feature = "aws-lambda-client")]
 pub mod client;
@@ -20,13 +21,17 @@ pub struct Event {
     pub dirichlet_noise: Option<f32>,
     pub rollout_depth: u16,
     pub rollout_temperature: f64,
+    pub action: Action,
 }
 
-#[derive(Debug, Default, PartialEq, Clone, Serialize, Deserialize)]
-pub struct Output {
-    pub pv: Vec<String>,
-    pub score: f32,
-    pub nodes: u64,
-    pub mem_usage: u64,
-    pub time_taken: time::Duration,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Output {
+    SuggestMoves(Vec<MoveInfo>),
+    SuggestMove {
+        pv: Vec<String>,
+        score: f32,
+        nodes: u64,
+        mem_usage: u64,
+        time_taken: time::Duration,
+    },
 }
