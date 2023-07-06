@@ -11,6 +11,12 @@ pub mod client;
 #[cfg(feature = "aws-lambda-runtime")]
 pub mod server;
 
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct AwsWrappedEvent {
+    pub body: String // base64 encoded json of the request body
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub size: usize,

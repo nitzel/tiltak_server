@@ -121,6 +121,9 @@ pub struct Event {
   "action": "SuggestMoves" // or "SuggestMove"
 }
 ```
+An alternative `time_control: {"Time":[{"secs":5,"nanos":0},{"secs":0,"nanos":0}]},` can be used.
+`SuggestMoves` uses up most of the time and thus only the first `secs` is relevant.
+`SuggestMove` however treats the first secs/nanos as the time-budget and the second one as the increment per move and then decides how much time TilTak shall spend on the calculation so that there is time left for more moves later in the game.
 
 ### Testing
 In theory the following should start a server listening for the lambda invocations

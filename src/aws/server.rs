@@ -1,4 +1,4 @@
-use crate::aws::{Event, Output, TimeControl, Action};
+use crate::aws::{AwsWrappedEvent, Event, Output, TimeControl, Action};
 use crate::position::{Komi, Position};
 use crate::search::MctsSetting;
 use crate::search::{self, MonteCarloTree};
@@ -12,7 +12,14 @@ type Error = Box<dyn std::error::Error + Sync + Send>;
 
 
 /// AWS serverside handler
-pub async fn handle_aws_event(e: Event, c: Context) -> Result<Output, Error> {
+pub async fn handle_aws_event(e: AwsWrappedEvent, c: Context) -> Result<Output, Error> {
+    println!("input={}", e.body.replace("\r", " ").replace("\n", "")); // log query to AWS CloudWatch
+    let e: Event = serde_json::from_str(&e.body)?;
+    if let Some(tps) = &e.tps {
+        println!("tps={};komi={};", tps, e.komi); // log query to AWS CloudWatch
+    } else {
+        println!("moves={};komi={};", e.moves.join(" "), e.komi); // log query to AWS CloudWatch
+    }
     match e.size {
         4 => handle_aws_event_generic::<4>(e, c),
         5 => handle_aws_event_generic::<5>(e, c),
