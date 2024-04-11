@@ -1,8 +1,8 @@
 use std::convert::TryFrom;
-use std::fmt::{self, Write};
-use std::ops;
 use std::ops::{Index, IndexMut};
 use std::str::FromStr;
+use std::{array, ops};
+use std::{fmt, mem};
 
 use board_game_traits::{Color, GameResult};
 #[cfg(feature = "serde")]
@@ -14,138 +14,7 @@ use crate::position::utils::Direction::*;
 use crate::position::Piece::{BlackCap, BlackFlat, BlackWall, WhiteCap, WhiteFlat, WhiteWall};
 use crate::position::Role::{Cap, Flat, Wall};
 
-/// A location on the board. Can be used to index a `Board`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct Square(pub u8);
-
-impl Square {
-    pub fn from_rank_file<const S: usize>(rank: u8, file: u8) -> Self {
-        debug_assert!(rank < S as u8 && file < S as u8);
-        Square(rank * S as u8 + file as u8)
-    }
-
-    pub fn rank<const S: usize>(self) -> u8 {
-        self.0 / S as u8
-    }
-
-    pub fn file<const S: usize>(self) -> u8 {
-        self.0 % S as u8
-    }
-
-    pub fn neighbours<const S: usize>(self) -> impl Iterator<Item = Square> {
-        (if self.0 as usize == 0 {
-            [1, S as i8].iter()
-        } else if self.0 as usize == S - 1 {
-            [-1, S as i8].iter()
-        } else if self.0 as usize == S * S - S {
-            [1, -(S as i8)].iter()
-        } else if self.0 as usize == S * S - 1 {
-            [-1, -(S as i8)].iter()
-        } else if self.rank::<S>() == 0 {
-            [-1, 1, S as i8].iter()
-        } else if self.rank::<S>() == S as u8 - 1 {
-            [-(S as i8), -1, 1].iter()
-        } else if self.file::<S>() == 0 {
-            [-(S as i8), 1, S as i8].iter()
-        } else if self.file::<S>() == S as u8 - 1 {
-            [-(S as i8), -1, S as i8].iter()
-        } else {
-            [-(S as i8), -1, 1, S as i8].iter()
-        })
-        .cloned()
-        .map(move |sq| sq + self.0 as i8)
-        .map(|sq| Square(sq as u8))
-    }
-
-    pub fn directions<const S: usize>(self) -> impl Iterator<Item = Direction> {
-        (if self.0 as usize == 0 {
-            [East, South].iter()
-        } else if self.0 as usize == S - 1 {
-            [West, South].iter()
-        } else if self.0 as usize == S * S - S {
-            [East, North].iter()
-        } else if self.0 as usize == S * S - 1 {
-            [West, North].iter()
-        } else if self.rank::<S>() == 0 {
-            [West, East, South].iter()
-        } else if self.rank::<S>() == S as u8 - 1 {
-            [North, West, East].iter()
-        } else if self.file::<S>() == 0 {
-            [North, East, South].iter()
-        } else if self.file::<S>() == S as u8 - 1 {
-            [North, West, South].iter()
-        } else {
-            [North, West, East, South].iter()
-        })
-        .cloned()
-    }
-
-    pub fn go_direction<const S: usize>(self, direction: Direction) -> Option<Self> {
-        self.jump_direction::<S>(direction, 1)
-    }
-
-    pub fn jump_direction<const S: usize>(self, direction: Direction, len: u8) -> Option<Self> {
-        match direction {
-            North => self.0.checked_sub((S as u8) * len).map(Square),
-            West => {
-                if self.file::<S>() < len {
-                    None
-                } else {
-                    Some(Square(self.0 - len))
-                }
-            }
-            East => {
-                if self.file::<S>() >= S as u8 - len {
-                    None
-                } else {
-                    Some(Square(self.0 + len))
-                }
-            }
-            South => {
-                if self.0 + (S as u8) * len >= (S * S) as u8 {
-                    None
-                } else {
-                    Some(Square(self.0 + len * S as u8))
-                }
-            }
-        }
-    }
-
-    pub fn parse_square<const S: usize>(input: &str) -> Result<Square, pgn_traits::Error> {
-        if input.len() != 2 {
-            return Err(pgn_traits::Error::new_parse_error(format!(
-                "Couldn't parse square \"{}\"",
-                input
-            )));
-        }
-        let mut chars = input.chars();
-        let file = (chars.next().unwrap() as u8).overflowing_sub(b'a').0;
-        let rank = (S as u8 + b'0')
-            .overflowing_sub(chars.next().unwrap() as u8)
-            .0;
-        if file >= S as u8 || rank >= S as u8 {
-            Err(pgn_traits::Error::new_parse_error(format!(
-                "Couldn't parse square \"{}\" at size {}",
-                input, S
-            )))
-        } else {
-            Ok(Square(file + rank * S as u8))
-        }
-    }
-
-    pub fn to_string<const S: usize>(self) -> String {
-        let mut string = String::new();
-        write!(string, "{}", (self.file::<S>() + b'a') as char).unwrap();
-        write!(string, "{}", S as u8 - self.rank::<S>()).unwrap();
-        string
-    }
-}
-
-/// Iterates over all board squares.
-pub fn squares_iterator<const S: usize>() -> impl Iterator<Item = Square> {
-    (0..(S * S)).map(|i| Square(i as u8))
-}
+use super::{GroupEdgeConnection, Square, SquareCacheEntry};
 
 #[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Komi {
@@ -154,7 +23,7 @@ pub struct Komi {
 
 impl Komi {
     pub fn from_half_komi(half_komi: i8) -> Option<Self> {
-        if half_komi >= -10 && half_komi <= 10 {
+        if (-10..=10).contains(&half_komi) {
             Some(Komi { half_komi })
         } else {
             None
@@ -237,14 +106,25 @@ impl fmt::Display for Komi {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Role {
-    Flat,
-    Wall,
-    Cap,
+    Flat = 0,
+    Wall = 1,
+    Cap = 2,
 }
 
 impl Role {
     pub fn disc(self) -> usize {
         self as u16 as usize
+    }
+
+    pub fn from_disc(disc: u8) -> Self {
+        assert!(disc < 3);
+        unsafe { mem::transmute::<u8, Self>(disc) }
+    }
+
+    /// # Safety `disc` must be 0, 1 or 2
+    pub unsafe fn from_disc_unchecked(disc: u8) -> Self {
+        debug_assert!(disc < 3);
+        unsafe { mem::transmute::<u8, Self>(disc) }
     }
 }
 
@@ -440,19 +320,31 @@ impl IntoIterator for Stack {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Direction {
-    North,
-    West,
-    East,
-    South,
+    North = 0,
+    West = 1,
+    East = 2,
+    South = 3,
 }
 
 impl Direction {
+    pub(crate) fn from_disc(disc: u8) -> Self {
+        assert!(disc < 4);
+        unsafe { mem::transmute(disc) }
+    }
+
     pub(crate) fn reverse(self) -> Direction {
         match self {
             North => South,
             West => East,
             East => West,
             South => North,
+        }
+    }
+
+    pub(crate) fn orthogonal_directions(self) -> [Direction; 2] {
+        match self {
+            North | South => [West, East],
+            West | East => [North, South],
         }
     }
 
@@ -470,24 +362,33 @@ impl Direction {
 /// One or more `Movement`s, storing how many pieces are dropped off at each step
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct StackMovement {
+pub struct StackMovement<const S: usize> {
     // The first 4 bits is the number of squares moved
     // The remaining 28 bits are the number of pieces taken, 4 bits per number
     data: u8,
 }
 
-impl StackMovement {
+impl<const S: usize> StackMovement<S> {
     pub fn new() -> Self {
         StackMovement { data: 0 }
     }
 
-    pub fn get_first<const S: usize>(&self) -> Movement {
+    pub fn into_inner(self) -> u8 {
+        self.data
+    }
+
+    pub fn from_u8(data: u8) -> Self {
+        assert_eq!(data.checked_shr(S as u32).unwrap_or_default(), 0);
+        Self { data }
+    }
+
+    pub fn get_first(&self) -> Movement {
         Movement {
             pieces_to_take: 8 - self.data.leading_zeros() as u8,
         }
     }
 
-    pub fn push<const S: usize>(&mut self, movement: Movement, pieces_held: u8) {
+    pub fn push(&mut self, movement: Movement, pieces_held: u8) {
         debug_assert!(pieces_held > 0);
         debug_assert!(
             self.data == 0 || pieces_held > movement.pieces_to_take,
@@ -516,18 +417,19 @@ impl StackMovement {
         self.len() == 0
     }
 
-    pub fn from_movements<const S: usize, I: IntoIterator<Item = Movement>>(iter: I) -> Self {
+    pub fn from_movements<I: IntoIterator<Item = Movement>>(iter: I) -> Self {
         let mut pieces_held = S as u8;
         let mut result = StackMovement::new();
         for movement in iter {
             // println!("Holding {}, taking {}", pieces_held, movement.pieces_to_take);
-            result.push::<S>(movement, pieces_held);
+            result.push(movement, pieces_held);
             pieces_held = movement.pieces_to_take;
         }
         result
     }
 
-    pub fn into_iter<const S: usize>(self) -> impl Iterator<Item = Movement> {
+    #[allow(clippy::should_implement_trait)]
+    pub fn into_iter(self) -> impl Iterator<Item = Movement> {
         StackMovementIterator { data: self.data }
     }
 }
@@ -558,15 +460,172 @@ pub struct Movement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct AbstractBoard<T, const S: usize> {
+pub struct AbstractBoard<T, const S: usize> {
     pub(crate) raw: [[T; S]; S],
 }
 
 impl<T: Copy, const S: usize> AbstractBoard<T, S> {
-    pub fn new_with_value(value: T) -> Self {
+    pub const fn new_with_value(value: T) -> Self {
         AbstractBoard {
             raw: [[value; S]; S],
         }
+    }
+}
+
+impl<T: Copy, const S: usize> AbstractBoard<T, S> {
+    pub fn new_from_fn<F>(mut f: F) -> Self
+    where
+        F: FnMut() -> T,
+    {
+        AbstractBoard {
+            raw: array::from_fn(|_| array::from_fn(|_| f())),
+        }
+    }
+}
+
+pub(crate) const fn generate_neighbor_table<const S: usize>() -> AbstractBoard<BitBoard, S> {
+    let mut table = AbstractBoard::new_with_value(BitBoard::empty());
+    let mut rank = 0;
+    while rank < S {
+        let mut file = 0;
+        while file < S {
+            let square = Square::from_rank_file(rank as u8, file as u8);
+            table.raw[file][rank] = BitBoard::neighbors::<S>(square);
+            file += 1;
+        }
+        rank += 1;
+    }
+    table
+}
+
+const NEIGHBOR_TABLE_3S: AbstractBoard<BitBoard, 3> = generate_neighbor_table::<3>();
+const NEIGHBOR_TABLE_4S: AbstractBoard<BitBoard, 4> = generate_neighbor_table::<4>();
+const NEIGHBOR_TABLE_5S: AbstractBoard<BitBoard, 5> = generate_neighbor_table::<5>();
+const NEIGHBOR_TABLE_6S: AbstractBoard<BitBoard, 6> = generate_neighbor_table::<6>();
+const NEIGHBOR_TABLE_7S: AbstractBoard<BitBoard, 7> = generate_neighbor_table::<7>();
+const NEIGHBOR_TABLE_8S: AbstractBoard<BitBoard, 8> = generate_neighbor_table::<8>();
+
+pub(crate) fn lookup_neighbor_table<const S: usize>(square: Square<S>) -> BitBoard {
+    match S {
+        3 => NEIGHBOR_TABLE_3S[square.downcast_size()],
+        4 => NEIGHBOR_TABLE_4S[square.downcast_size()],
+        5 => NEIGHBOR_TABLE_5S[square.downcast_size()],
+        6 => NEIGHBOR_TABLE_6S[square.downcast_size()],
+        7 => NEIGHBOR_TABLE_7S[square.downcast_size()],
+        8 => NEIGHBOR_TABLE_8S[square.downcast_size()],
+        _ => unimplemented!("Unsupported size {}", S),
+    }
+}
+
+pub(crate) const fn generate_neighbor_array_table<const S: usize>(
+) -> AbstractBoard<SquareCacheEntry<S>, S> {
+    let mut table = AbstractBoard::new_with_value(SquareCacheEntry::empty());
+    let mut rank = 0;
+    while rank < S {
+        let mut file = 0;
+        while file < S {
+            let square = Square::from_rank_file(rank as u8, file as u8);
+            table.raw[file][rank] = square.cache_data();
+            file += 1;
+        }
+        rank += 1;
+    }
+    table
+}
+
+const NEIGHBOR_ARRAY_TABLE_3S: AbstractBoard<SquareCacheEntry<3>, 3> =
+    generate_neighbor_array_table::<3>();
+const NEIGHBOR_ARRAY_TABLE_4S: AbstractBoard<SquareCacheEntry<4>, 4> =
+    generate_neighbor_array_table::<4>();
+const NEIGHBOR_ARRAY_TABLE_5S: AbstractBoard<SquareCacheEntry<5>, 5> =
+    generate_neighbor_array_table::<5>();
+const NEIGHBOR_ARRAY_TABLE_6S: AbstractBoard<SquareCacheEntry<6>, 6> =
+    generate_neighbor_array_table::<6>();
+const NEIGHBOR_ARRAY_TABLE_7S: AbstractBoard<SquareCacheEntry<7>, 7> =
+    generate_neighbor_array_table::<7>();
+const NEIGHBOR_ARRAY_TABLE_8S: AbstractBoard<SquareCacheEntry<8>, 8> =
+    generate_neighbor_array_table::<8>();
+
+pub(crate) fn lookup_neighbor_array_table<const S: usize>(
+    square: Square<S>,
+) -> SquareCacheEntry<S> {
+    match S {
+        3 => NEIGHBOR_ARRAY_TABLE_3S[square.downcast_size()].downcast_size(),
+        4 => NEIGHBOR_ARRAY_TABLE_4S[square.downcast_size()].downcast_size(),
+        5 => NEIGHBOR_ARRAY_TABLE_5S[square.downcast_size()].downcast_size(),
+        6 => NEIGHBOR_ARRAY_TABLE_6S[square.downcast_size()].downcast_size(),
+        7 => NEIGHBOR_ARRAY_TABLE_7S[square.downcast_size()].downcast_size(),
+        8 => NEIGHBOR_ARRAY_TABLE_8S[square.downcast_size()].downcast_size(),
+        _ => unimplemented!("Unsupported size {}", S),
+    }
+}
+
+pub(crate) const fn generate_group_connections_table<const S: usize>(
+) -> AbstractBoard<GroupEdgeConnection, S> {
+    let mut table = AbstractBoard::new_with_value(GroupEdgeConnection::empty());
+    let mut rank = 0;
+    while rank < S {
+        let mut file = 0;
+        while file < S {
+            let square: Square<S> = Square::from_rank_file(rank as u8, file as u8);
+            table.raw[file][rank] = GroupEdgeConnection::empty().connect_square_const(square);
+            file += 1;
+        }
+        rank += 1;
+    }
+    table
+}
+
+const GROUP_CONNECTION_TABLE_3S: AbstractBoard<GroupEdgeConnection, 3> =
+    generate_group_connections_table::<3>();
+const GROUP_CONNECTION_TABLE_4S: AbstractBoard<GroupEdgeConnection, 4> =
+    generate_group_connections_table::<4>();
+const GROUP_CONNECTION_TABLE_5S: AbstractBoard<GroupEdgeConnection, 5> =
+    generate_group_connections_table::<5>();
+const GROUP_CONNECTION_TABLE_6S: AbstractBoard<GroupEdgeConnection, 6> =
+    generate_group_connections_table::<6>();
+const GROUP_CONNECTION_TABLE_7S: AbstractBoard<GroupEdgeConnection, 7> =
+    generate_group_connections_table::<7>();
+const GROUP_CONNECTION_TABLE_8S: AbstractBoard<GroupEdgeConnection, 8> =
+    generate_group_connections_table::<8>();
+
+pub(crate) fn lookup_group_connections_table<const S: usize>(
+    square: Square<S>,
+) -> GroupEdgeConnection {
+    match S {
+        3 => GROUP_CONNECTION_TABLE_3S[square.downcast_size()],
+        4 => GROUP_CONNECTION_TABLE_4S[square.downcast_size()],
+        5 => GROUP_CONNECTION_TABLE_5S[square.downcast_size()],
+        6 => GROUP_CONNECTION_TABLE_6S[square.downcast_size()],
+        7 => GROUP_CONNECTION_TABLE_7S[square.downcast_size()],
+        8 => GROUP_CONNECTION_TABLE_8S[square.downcast_size()],
+        _ => unimplemented!("Unsupported size {}", S),
+    }
+}
+
+impl<const S: usize> Square<S> {
+    pub fn neighbors(self) -> impl Iterator<Item = Square<S>> {
+        lookup_neighbor_array_table::<S>(self)
+            .into_iter()
+            .map(|(_, neighbor)| neighbor)
+    }
+
+    pub fn directions(self) -> impl Iterator<Item = Direction> {
+        lookup_neighbor_array_table::<S>(self)
+            .into_iter()
+            .map(|(direction, _)| direction)
+    }
+
+    pub fn direction_neighbors(self) -> impl Iterator<Item = (Direction, Square<S>)> {
+        lookup_neighbor_array_table::<S>(self).into_iter()
+    }
+
+    pub fn go_direction(self, direction: Direction) -> Option<Square<S>> {
+        lookup_neighbor_array_table::<S>(self).go_direction(self, direction)
+    }
+
+    pub fn group_edge_connection(self) -> GroupEdgeConnection {
+        lookup_group_connections_table(self)
     }
 }
 
@@ -578,16 +637,32 @@ impl<T: Default + Copy, const S: usize> Default for AbstractBoard<T, S> {
     }
 }
 
-impl<T, const S: usize> Index<Square> for AbstractBoard<T, S> {
+impl<T, const S: usize> Index<Square<S>> for AbstractBoard<T, S> {
     type Output = T;
-
-    fn index(&self, square: Square) -> &Self::Output {
-        &self.raw[square.0 as usize % S][square.0 as usize / S]
+    #[allow(clippy::needless_lifetimes)]
+    fn index<'a>(&'a self, square: Square<S>) -> &'a Self::Output {
+        debug_assert!((square.into_inner() as usize) < S * S);
+        // Compared to the safe code, this is roughly a 10% speedup of the entire engine
+        unsafe {
+            (self.raw.as_ptr() as *const T)
+                .offset(square.into_inner() as isize)
+                .as_ref()
+                .unwrap_unchecked()
+        }
     }
 }
 
-impl<T, const S: usize> IndexMut<Square> for AbstractBoard<T, S> {
-    fn index_mut(&mut self, square: Square) -> &mut Self::Output {
-        &mut self.raw[square.0 as usize % S][square.0 as usize / S]
+impl<T, const S: usize> IndexMut<Square<S>> for AbstractBoard<T, S> {
+    #[allow(clippy::needless_lifetimes)]
+    fn index_mut<'a>(&'a mut self, square: Square<S>) -> &'a mut Self::Output {
+        debug_assert!((square.into_inner() as usize) < S * S);
+        // Safety: A `Square<S>` is guaranteed to always be valid, i.e. less than `S * S`
+        // Compared to the safe code, this is roughly a 10% speedup of the entire engine
+        unsafe {
+            (self.raw.as_mut_ptr() as *mut T)
+                .offset(square.into_inner() as isize)
+                .as_mut()
+                .unwrap_unchecked()
+        }
     }
 }

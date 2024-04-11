@@ -30,6 +30,10 @@ pub async fn handle_aws_event(e: AwsWrappedEvent, c: Context) -> Result<Output, 
 
 pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result<Output, Error> {
     let komi = Komi::try_from(e.komi)?;
+    let eval_komi = match e.eval_komi {
+        Some(komi_f64) => Komi::try_from(komi_f64)?,
+        None => komi,
+    };
     let mut position = match e.tps {
         Some(tps) => <Position<S>>::from_fen_with_komi(&tps, komi)?,
         None => <Position<S>>::start_position_with_komi(komi),
@@ -85,7 +89,9 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
     }
     .add_rollout_depth(e.rollout_depth)
     .add_rollout_temperature(e.rollout_temperature)
-    .mem_usage(2_usize.pow(30));
+    .mem_usage(2_usize.pow(30))
+    .add_value_params(<Position<S>>::value_params(eval_komi))
+    .add_policy_params(<Position<S>>::policy_params(eval_komi));
 
     let start_time = Instant::now();
     match e.action {
@@ -126,7 +132,7 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
                     tree.search_for_time(max_time, |_| {});
 
                     let score = 1.0 - tree.best_move().1;
-                    let pv = tree.pv().map(|mv| mv.to_string::<S>()).collect();
+                    let pv = tree.pv().map(|mv| mv.to_string()).collect();
                     Ok(Output::SuggestMove {
                         pv,
                         score,
@@ -144,7 +150,7 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
                         };
                     }
                     let score = 1.0 - tree.best_move().1;
-                    let pv = tree.pv().map(|mv| mv.to_string::<S>()).collect();
+                    let pv = tree.pv().map(|mv| mv.to_string()).collect();
                     Ok(Output::SuggestMove {
                         pv,
                         score,

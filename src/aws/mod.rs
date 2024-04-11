@@ -23,7 +23,8 @@ pub struct Event {
     pub tps: Option<String>,
     pub moves: Vec<String>,
     pub time_control: TimeControl,
-    pub komi: f64,
+    pub komi: f64, // "Main" komi setting, used to determine the game result at terminal nodes
+    pub eval_komi: Option<f64>, // Komi used for heuristic evaluation. Default to the main komi, but not all komis are supported
     pub dirichlet_noise: Option<f32>,
     pub rollout_depth: u16,
     pub rollout_temperature: f64,
@@ -36,7 +37,7 @@ pub enum Output {
     SuggestMove {
         pv: Vec<String>,
         score: f32,
-        nodes: u64,
+        nodes: u32,
         mem_usage: u64,
         time_taken: time::Duration,
     },

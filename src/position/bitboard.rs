@@ -1,7 +1,8 @@
-use crate::position::utils::Square;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::{fmt, ops};
+
+use super::{Direction, Square};
 
 #[derive(PartialEq, Eq, Clone, Copy, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -59,10 +60,10 @@ impl BitBoard {
         }
     }
 
-    pub fn lines_for_square<const S: usize>(square: Square) -> [Self; 2] {
+    pub fn lines_for_square<const S: usize>(square: Square<S>) -> [Self; 2] {
         [
-            Self::full().rank::<S>(square.rank::<S>()),
-            Self::full().file::<S>(square.file::<S>()),
+            Self::full().rank::<S>(square.rank()),
+            Self::full().file::<S>(square.file()),
         ]
     }
 
@@ -87,29 +88,54 @@ impl BitBoard {
         debug_assert!(i < 64);
         self.board & (1 << i) != 0
     }
+
+    #[inline]
+    pub fn get_square<const S: usize>(self, square: Square<S>) -> bool {
+        debug_assert!(square.into_inner() < 64);
+        self.board & (1 << square.into_inner()) != 0
+    }
+
     // Sets the square to true
     #[inline]
-    pub fn set(self, i: u8) -> Self {
+    #[must_use]
+    pub const fn set(self, i: u8) -> Self {
         debug_assert!(i < 64);
         BitBoard::from_u64(self.board | 1 << i)
     }
 
+    // Sets the square to true
+    #[inline]
+    #[must_use]
+    pub const fn set_square<const S: usize>(self, square: Square<S>) -> Self {
+        debug_assert!(square.into_inner() < 64);
+        BitBoard::from_u64(self.board | 1 << square.into_inner())
+    }
+
     // Sets the square to false
     #[inline]
+    #[must_use]
     pub fn clear(self, i: u8) -> Self {
         debug_assert!(i < 64);
         BitBoard::from_u64(self.board & !(1 << i))
     }
 
+    // Sets the square to false
     #[inline]
-    pub fn rank<const S: usize>(self, i: u8) -> Self {
+    #[must_use]
+    pub fn clear_square<const S: usize>(self, square: Square<S>) -> Self {
+        debug_assert!(square.into_inner() < 64);
+        BitBoard::from_u64(self.board & !(1 << square.into_inner()))
+    }
+
+    #[inline]
+    pub fn file<const S: usize>(self, i: u8) -> Self {
         debug_assert!(i < S as u8);
         let mask = (1 << S) - 1;
         BitBoard::from_u64(self.board & (mask << (i as u64 * S as u64)))
     }
 
     #[inline]
-    pub fn file<const S: usize>(self, i: u8) -> Self {
+    pub fn rank<const S: usize>(self, i: u8) -> Self {
         debug_assert!(i < S as u8);
         #[allow(clippy::unusual_byte_groupings)]
         let mask = match S {
@@ -135,29 +161,52 @@ impl BitBoard {
     pub fn count(self) -> u8 {
         self.board.count_ones() as u8
     }
-}
 
-impl IntoIterator for BitBoard {
-    type Item = Square;
-    type IntoIter = BitBoardIter;
+    // Get a bitboard with only the square's neighbors set
+    // Note: The implementation is somewhat convoluted in order to work in const contexts.
+    pub const fn neighbors<const S: usize>(square: Square<S>) -> BitBoard {
+        let mut board = BitBoard::empty();
+        if let Some(north) = square.go_direction_const(Direction::North) {
+            board = board.set_square(north);
+        }
+        if let Some(west) = square.go_direction_const(Direction::West) {
+            board = board.set_square(west);
+        }
+        if let Some(east) = square.go_direction_const(Direction::East) {
+            board = board.set_square(east);
+        }
+        if let Some(south) = square.go_direction_const(Direction::South) {
+            board = board.set_square(south);
+        }
+        board
+    }
 
-    fn into_iter(self) -> Self::IntoIter {
+    #[inline]
+    pub fn occupied_square<const S: usize>(self) -> Option<Square<S>> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(Square::from_u8(self.board.trailing_zeros() as u8))
+        }
+    }
+
+    pub fn into_iter<const S: usize>(self) -> BitBoardIter<S> {
         BitBoardIter::new(self)
     }
 }
 
-pub struct BitBoardIter {
+pub struct BitBoardIter<const S: usize> {
     board: BitBoard,
 }
 
-impl BitBoardIter {
+impl<const S: usize> BitBoardIter<S> {
     fn new(board: BitBoard) -> Self {
         BitBoardIter { board }
     }
 }
 
-impl Iterator for BitBoardIter {
-    type Item = Square;
+impl<const S: usize> Iterator for BitBoardIter<S> {
+    type Item = Square<S>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.board.is_empty() {
@@ -165,7 +214,7 @@ impl Iterator for BitBoardIter {
         } else {
             let i = self.board.board.trailing_zeros() as u8;
             self.board = self.board.clear(i);
-            Some(Square(i))
+            Some(Square::from_u8(i))
         }
     }
 }

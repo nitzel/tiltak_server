@@ -10,7 +10,7 @@ use std::{io, net, thread};
 use board_game_traits::{Color, GameResult, Position as PositionTrait};
 use bufstream::BufStream;
 use chrono::{Datelike, Local};
-use clap::{App, Arg};
+use clap::{Arg, ArgAction, Command};
 use log::error;
 use log::{debug, info, warn};
 use pgn_traits::PgnPosition;
@@ -38,6 +38,8 @@ pub struct PlaytakSettings {
     rollout_temperature: f64,
     seek_game_time: Duration,
     seek_increment: Duration,
+    seek_unrated: bool,
+    target_move_time: Option<Duration>,
     komi: Komi,
 }
 
@@ -57,114 +59,157 @@ impl PlaytakSettings {
 }
 
 pub fn main() -> Result<()> {
-    let mut app = App::new("Tiltak playtak client")
+    let mut app = Command::new("Tiltak playtak client")
         .version("0.1")
         .author("Morten Lohne")
         .arg(
-            Arg::with_name("username")
+            Arg::new("username")
                 .requires("password")
-                .short("u")
+                .short('u')
                 .long("username")
+                .env("PLAYTAK_USERNAME")
                 .value_name("USER")
                 .help("playtak.com username")
-                .takes_value(true),
+                .num_args(1),
         )
         .arg(
-            Arg::with_name("password")
-                .short("p")
+            Arg::new("password")
+                .short('p')
                 .long("password")
+                .env("PLAYTAK_PASSWORD")
                 .value_name("PASS")
                 .help("playtak.com password")
-                .takes_value(true),
+                .num_args(1),
         )
         .arg(
-            Arg::with_name("size")
-                .short("s")
+            Arg::new("size")
+                .short('s')
                 .long("size")
+                .env("SIZE")
                 .help("Board size")
-                .takes_value(true)
+                .num_args(1)
                 .default_value("5")
-                .possible_values(&["4", "5", "6"]),
+                .value_parser(clap::value_parser!(u64).range(4..=8)),
         )
         .arg(
-            Arg::with_name("logfile")
-                .short("l")
+            Arg::new("logfile")
+                .short('l')
                 .long("logfile")
+                .env("LOGFILE")
                 .value_name("tiltak.log")
                 .help("Name of debug logfile")
-                .takes_value(true),
+                .num_args(1),
         )
         .arg(
-            Arg::with_name("playBot")
+            Arg::new("playBot")
                 .long("play-bot")
+                .env("PLAY_BOT")
                 .value_name("botname")
                 .help("Instead of seeking any game, accept any seek from the specified bot. Mutually exclusive with --tc")
                 .conflicts_with("tc")
-                .takes_value(true)
+                .num_args(1)
                 .required(true),
 
         )
         .arg(
-            Arg::with_name("tc")
+            Arg::new("tc")
                  .long("tc")
+                 .env("TC")
                  .help("Time control to seek games for. Mutually exclusive with --play-bot")
                  .conflicts_with("playBot")
-                 .takes_value(true)
+                 .num_args(1)
                  .required(true),
         )
-        .arg(Arg::with_name("allowChoosingColor")
+        .arg(
+            Arg::new("targetMoveTime")
+                .long("target-move-time")
+                .env("TARGET_MOVE_TIME")
+                .conflicts_with("fixedNodes")
+                .help("Try spending no more than this number of seconds per move. Will occasionally search longer, assuming the time control allows")
+                .num_args(1))
+        .arg(Arg::new("allowChoosingColor")
             .long("allow-choosing-color")
+            .env("ALLOW_CHOOSING_COLOR")
             .help("Allow users to change the bot's seek color through chat")
-            .takes_value(false))
-        .arg(Arg::with_name("allowChoosingSize")
+            .action(ArgAction::SetTrue)
+            .num_args(0))
+        .arg(Arg::new("allowChoosingSize")
             .long("allow-choosing-size")
+            .env("ALLOW_CHOOSING_SIZE")
             .help("Allow users to change the bot's board size through chat")
-            .takes_value(false))
-        .arg(Arg::with_name("seekColor")
+            .action(ArgAction::SetTrue)
+            .num_args(0))
+        .arg(Arg::new("seekColor")
             .long("seek-color")
+            .env("SEEK_COLOR")
             .help("Color of games to seek")
-            .takes_value(true)
-            .possible_values(&["white", "black", "either"])
+            .num_args(1)
+            .value_parser(["white", "black", "either"])
             .default_value("either"))
-        .arg(Arg::with_name("policyNoise")
+        .arg(Arg::new("policyNoise")
             .long("policy-noise")
+            .env("POLICY_NOISE")
             .help("Add dirichlet noise to the policy scores of the root node in search. This gives the bot a small amount of randomness in its play, especially on low nodecounts.")
-            .takes_value(true)
-            .possible_values(&["none", "low", "medium", "high"])
+            .num_args(1)
+            .value_parser(["none", "low", "medium", "high"])
             .default_value("none"))
-        .arg(Arg::with_name("rolloutDepth")
+        .arg(Arg::new("rolloutDepth")
             .long("rollout-depth")
+            .env("ROLLOUT_DEPTH")
             .help("Depth of MCTS rollouts. Once a rollout reaches the maximum depth, the heuristic eval function is returned. Can be set to 0 to disable rollouts entirely.")
-            .takes_value(true)
-            .default_value("0"))
-        .arg(Arg::with_name("rolloutNoise")
+            .num_args(1)
+            .default_value("0")
+            .value_parser(clap::value_parser!(u16)))
+        .arg(Arg::new("rolloutNoise")
             .long("rollout-noise")
+            .env("ROLLOUT_NOISE")
             .help("Add a random component to move selection in MCTS rollouts. Has no effect if --rollout-depth is 0. For full rollouts, even the 'low' setting is enough to give highly variable play.")
-            .takes_value(true)
-            .possible_values(&["low", "medium", "high"])
+            .num_args(1)
+            .value_parser(["low", "medium", "high"])
             .default_value("low"))
-        .arg(Arg::with_name("fixedNodes")
+        .arg(Arg::new("fixedNodes")
             .long("fixed-nodes")
-            .conflicts_with("aws-function-name")
+            .env("FIXED_NODES")
             .help("Normally, the bot will search a variable number of nodes, depending on hardware on time control. This option overrides that to calculate a fixed amount of nodes each move")
-            .takes_value(true))
-        .arg(Arg::with_name("komi")
+            .num_args(1))
+        .arg(Arg::new("komi")
             .long("komi")
+            .env("KOMI")
             .help("Seek games with komi")
-            .takes_value(true)
-            .default_value("0"));
+            .num_args(1)
+            .default_value("0"))
+        .arg(Arg::new("seekUnrated")
+            .long("seek-unrated")
+            .env("SEEK_UNRATED")
+            .help("Seek unrated games")
+            .action(ArgAction::SetTrue)
+            .num_args(0))
+        .arg(Arg::new("playtakBaseUrl")
+            .long("playtak-base-url")
+            .env("PLAYTAK_BASE_URL")
+            .help("Base URL to connect to")
+            .num_args(1)
+            .default_value("playtak.com"))
+        .arg(Arg::new("playtakPort")
+            .long("playtak-port")
+            .env("PLAYTAK_PORT")
+            .help("Network port to connect to")
+            .num_args(1)
+            .default_value("10000")
+            .value_parser(clap::value_parser!(u16)));
 
     if cfg!(feature = "aws-lambda-client") {
         app = app.arg(
-            Arg::with_name("aws-function-name")
+            Arg::new("aws-function-name")
                 .long("aws-function-name")
+                .env("AWS_FUNCTION_NAME")
                 .value_name("tiltak")
                 .required(true)
                 .conflicts_with("fixedNodes")
                 .help(
                     "Run the engine on AWS instead of locally. Requires aws cli installed locally.",
                 )
-                .takes_value(true),
+                .num_args(1),
         );
     }
     let matches = app.get_matches();
@@ -179,7 +224,7 @@ pub fn main() -> Result<()> {
         ))
     });
 
-    if let Some(log_file) = matches.value_of("logfile") {
+    if let Some(log_file) = matches.get_one::<String>("logfile") {
         log_dispatcher
             .chain(
                 fern::Dispatch::new()
@@ -201,38 +246,54 @@ pub fn main() -> Result<()> {
             .unwrap()
     }
 
-    let size: usize = matches.value_of("size").unwrap().parse().unwrap();
+    let size: usize = *matches.get_one::<u64>("size").unwrap() as usize;
 
-    let allow_choosing_color = matches.is_present("allowChoosingColor");
-    let allow_choosing_size = matches.is_present("allowChoosingSize");
-    let default_seek_color = match matches.value_of("seekColor").unwrap() {
+    let allow_choosing_color = matches.get_flag("allowChoosingColor");
+    let allow_choosing_size = matches.get_flag("allowChoosingSize");
+    let default_seek_color = match matches.get_one::<String>("seekColor").unwrap().as_str() {
         "white" => Some(Color::White),
         "black" => Some(Color::Black),
         "either" => None,
         _ => unreachable!(),
     };
 
-    let dirichlet_noise: Option<f32> = match matches.value_of("policyNoise").unwrap() {
-        "none" => None,
-        "low" => Some(0.5),
-        "medium" => Some(0.25),
-        "high" => Some(0.1),
-        s => panic!("policyNoise cannot be {}", s),
-    };
+    let dirichlet_noise: Option<f32> =
+        match matches.get_one::<String>("policyNoise").unwrap().as_ref() {
+            "none" => None,
+            "low" => Some(0.5),
+            "medium" => Some(0.25),
+            "high" => Some(0.1),
+            s => panic!("policyNoise cannot be {}", s),
+        };
 
-    let rollout_depth: u16 = matches.value_of("rolloutDepth").unwrap().parse().unwrap();
-    let rollout_temperature: f64 = match matches.value_of("rolloutNoise").unwrap() {
+    let rollout_depth: u16 = *matches.get_one::<u16>("rolloutDepth").unwrap();
+    let rollout_temperature: f64 = match matches.get_one::<String>("rolloutNoise").unwrap().as_ref()
+    {
         "low" => 0.2,
         "medium" => 0.3,
         "high" => 0.5,
         s => panic!("rolloutTemperature cannot be {}", s),
     };
 
-    let fixed_nodes: Option<u64> = matches.value_of("fixedNodes").map(|v| v.parse().unwrap());
+    let fixed_nodes: Option<u64> = matches
+        .get_one::<String>("fixedNodes")
+        .map(|v| v.parse().unwrap());
 
-    let tc = matches.value_of("tc").map(parse_tc);
+    let tc = matches.get_one::<String>("tc").map(|tc| parse_tc(tc));
 
-    let komi = matches.value_of("komi").unwrap().parse().unwrap();
+    let target_move_time: Option<Duration> = matches
+        .get_one::<String>("targetMoveTime")
+        .map(|v| v.parse().unwrap())
+        .map(Duration::from_secs_f32);
+
+    let komi = matches.get_one::<String>("komi").unwrap().parse().unwrap();
+
+    let seek_unrated = matches.get_flag("seekUnrated");
+
+    let playtak_base_url = matches.get_one::<String>("playtakBaseUrl").unwrap();
+    let playtak_port = *matches.get_one::<u16>("playtakPort").unwrap();
+
+    let playtak_url = format!("{}:{}", playtak_base_url, playtak_port);
 
     let playtak_settings = PlaytakSettings {
         allow_choosing_size,
@@ -245,19 +306,21 @@ pub fn main() -> Result<()> {
         rollout_temperature,
         seek_game_time: tc.unwrap_or_default().0,
         seek_increment: tc.unwrap_or_default().1,
+        seek_unrated,
+        target_move_time,
         komi,
     };
 
     loop {
         #[cfg(feature = "aws-lambda-client")]
         let connection_result =
-            if let Some(aws_function_name) = matches.value_of("aws-function-name") {
-                PlaytakSession::with_aws(aws_function_name.to_string())
+            if let Some(aws_function_name) = matches.get_one::<String>("aws-function-name") {
+                PlaytakSession::with_aws(&playtak_url, aws_function_name.to_string())
             } else {
-                PlaytakSession::new()
+                PlaytakSession::new(&playtak_url)
             };
         #[cfg(not(feature = "aws-lambda-client"))]
-        let connection_result = PlaytakSession::new();
+        let connection_result = PlaytakSession::new(&playtak_url);
 
         let mut session = match connection_result {
             Ok(ok) => ok,
@@ -268,9 +331,10 @@ pub fn main() -> Result<()> {
             }
         };
 
-        if let (Some(user), Some(pwd)) =
-            (matches.value_of("username"), matches.value_of("password"))
-        {
+        if let (Some(user), Some(pwd)) = (
+            matches.get_one::<String>("username"),
+            matches.get_one::<String>("password"),
+        ) {
             session.username = Some(user.to_string());
             session.login("Tiltak", user, pwd)?;
         } else {
@@ -279,7 +343,7 @@ pub fn main() -> Result<()> {
         }
 
         // Re-connect if we get disconnected from the server
-        let error = match matches.value_of("playBot") {
+        let error = match matches.get_one::<String>("playBot") {
             Some(bot_name) => {
                 match match size {
                     4 => session.accept_seek::<4>(playtak_settings, bot_name),
@@ -458,8 +522,8 @@ impl<'a> PlaytakGame<'a> {
 
 impl PlaytakSession {
     /// Initialize a connection to playtak.com. Does not log in or play games.
-    fn new() -> Result<Self> {
-        let connection = connect()?;
+    fn new(playtak_url: &str) -> Result<Self> {
+        let connection = connect(playtak_url)?;
         let mut ping_thread_connection = connection.get_ref().try_clone()?;
         let ping_thread = Some(thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(30));
@@ -476,8 +540,8 @@ impl PlaytakSession {
     }
 
     #[cfg(feature = "aws-lambda-client")]
-    fn with_aws(aws_function_name: String) -> Result<Self> {
-        let mut session = Self::new()?;
+    fn with_aws(playtak_url: &str, aws_function_name: String) -> Result<Self> {
+        let mut session = Self::new(playtak_url)?;
         session.aws_function_name = Some(aws_function_name);
         Ok(session)
     }
@@ -557,7 +621,7 @@ impl PlaytakSession {
         color: Option<Color>,
     ) -> Result<()> {
         self.send_line(&format!(
-            "Seek {} {} {} {} {} {} {} 0 0 ",
+            "Seek {} {} {} {} {} {} {} {} 0 ",
             size,
             playtak_settings.seek_game_time.as_secs(),
             playtak_settings.seek_increment.as_secs(),
@@ -569,6 +633,7 @@ impl PlaytakSession {
             playtak_settings.komi.half_komi(),
             position::starting_stones(size),
             position::starting_capstones(size),
+            if playtak_settings.seek_unrated { 1 } else { 0 },
         ))
     }
 
@@ -733,15 +798,11 @@ impl PlaytakSession {
             if position.side_to_move() == game.our_color && !restoring_previous_session {
                 let (best_move, score) =
                     // On the very first move, always place instantly in a random corner
-                    if squares_iterator::<S>().all(|square| position[square].is_empty()) {
+                    if squares_iterator::<S>().all(|square| position.stack_heights()[square] == 0) {
                         let mut rng = rand::thread_rng();
-                        let moves = vec![
-                            Move::Place(Role::Flat, Square(0)),
-                            Move::Place(Role::Flat, Square(S as u8 - 1)),
-                            Move::Place(Role::Flat, Square((S * (S - 1)) as u8)),
-                            Move::Place(Role::Flat, Square((S * S - 1) as u8)),
-                        ];
-                        (moves.choose(&mut rng).unwrap().clone(), 0.0)
+                        let corner_placements: Vec<Move<S>> = Square::corners().into_iter().map(|square| Move::placement(Role::Flat, square)).collect();
+
+                        (*corner_placements.choose(&mut rng).unwrap(), 0.0)
                     } else if let Some(fixed_nodes) = playtak_settings.fixed_nodes {
                         let settings =
                             playtak_settings.to_mcts_setting()
@@ -771,10 +832,11 @@ impl PlaytakSession {
                                 tps: None,
                                 moves: moves
                                     .iter()
-                                    .map(|PtnMove { mv, .. }: &PtnMove<Move>| mv.to_string::<S>())
+                                    .map(|PtnMove { mv, .. }: &PtnMove<Move<S>>| mv.to_string())
                                     .collect(),
                                 time_control: search::TimeControl::Time(our_time_left, game.increment),
                                 komi: position.komi().into(),
+                                eval_komi: None,
                                 dirichlet_noise: playtak_settings.dirichlet_noise,
                                 rollout_depth: playtak_settings.rollout_depth,
                                 rollout_temperature: playtak_settings.rollout_temperature,
@@ -798,28 +860,41 @@ impl PlaytakSession {
 
                         #[cfg(not(feature = "aws-lambda-client"))]
                         {
+                            let maximum_time = if let Some(target_move_time) =  playtak_settings.target_move_time {
+                                (our_time_left / 6 + game.increment / 2).min(2 * target_move_time)
+                            } else {
+                                our_time_left / 6 + game.increment / 2
+                            };
+
+                            // Give enough memory for a CPU calculating at roughly 200K nps.
+                            let max_nodes = (maximum_time.as_secs() as u32).saturating_mul(200_000);
+
+                            // For 6s, the toughest position I've found required 40 elements/node searched
+                            // This formula gives 72, which is hopefully plenty
+                            let max_arena_size = if playtak_settings.rollout_depth < 10 {
+                                max_nodes.saturating_mul((S * S) as u32 * 2)
+                            } else {
+                                // Give SlateBot a smaller tree size, because its nps is much lower
+                                max_nodes.saturating_mul(S as u32 * 2)
+                            };
+
                             let settings =
                                 playtak_settings.to_mcts_setting()
-                                .arena_size(2_u32.pow(31));
-
-                            let maximum_time = our_time_left / 6 + game.increment / 2;
+                                .arena_size(max_arena_size.min(2_u32.pow(31)));
 
                             search::play_move_time(position.clone(), maximum_time, settings)
                         }
                     };
 
-                position.do_move(best_move.clone());
+                position.do_move(best_move);
                 moves.push(PtnMove {
-                    mv: best_move.clone(),
+                    mv: best_move,
                     annotations: vec![],
                     comment: score.to_string(),
                 });
 
-                let output_string = format!(
-                    "Game#{} {}",
-                    game.game_no,
-                    best_move.to_string_playtak::<S>()
-                );
+                let output_string =
+                    format!("Game#{} {}", game.game_no, best_move.to_string_playtak());
                 self.send_line(&output_string)?;
 
                 // Say "Tak" whenever there is a threat to win
@@ -884,8 +959,8 @@ impl PlaytakSession {
                         match words[1] {
                             "P" | "M" => {
                                 let move_string = words[1..].join(" ");
-                                let move_played = Move::from_string_playtak::<S>(&move_string);
-                                position.do_move(move_played.clone());
+                                let move_played = Move::from_string_playtak(&move_string);
+                                position.do_move(move_played);
                                 moves.push(PtnMove {
                                     mv: move_played,
                                     annotations: vec![],
@@ -915,7 +990,7 @@ impl PlaytakSession {
 
         info!("Game finished. Pgn: ");
 
-        let date = Local::today();
+        let date = Local::now();
 
         let tags = vec![
             ("Event".to_string(), "Playtak challenge".to_string()),
@@ -945,7 +1020,7 @@ impl PlaytakSession {
 
         let mut move_list = vec![];
         for PtnMove { mv, .. } in moves {
-            move_list.push(mv.to_string::<S>());
+            move_list.push(mv.to_string());
         }
         info!("Move list: {}", move_list.join(" "));
 
@@ -953,11 +1028,11 @@ impl PlaytakSession {
     }
 }
 
-fn connect() -> Result<BufStream<TcpStream>> {
-    let connection = dial()?;
+fn connect(playtak_url: &str) -> Result<BufStream<TcpStream>> {
+    let connection = dial(playtak_url)?;
     Ok(connection)
 }
 
-fn dial() -> Result<BufStream<TcpStream>> {
-    net::TcpStream::connect("playtak.com:10000").map(BufStream::new)
+fn dial(playtak_url: &str) -> Result<BufStream<TcpStream>> {
+    net::TcpStream::connect(playtak_url).map(BufStream::new)
 }

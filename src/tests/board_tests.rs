@@ -3,10 +3,10 @@ use board_game_traits::{GameResult, GameResult::*};
 use pgn_traits::PgnPosition;
 
 use crate::position::Direction::*;
-use crate::position::Move;
 use crate::position::Piece::{BlackCap, BlackFlat, WhiteFlat, WhiteWall};
 use crate::position::Position;
 use crate::position::{squares_iterator, Piece, Role, Square, Stack};
+use crate::position::{ExpMove, Move};
 use crate::tests::do_moves_and_check_validity;
 use crate::{position as board_mod, search};
 
@@ -14,50 +14,57 @@ use crate::{position as board_mod, search};
 fn default_board_test() {
     let position = <Position<5>>::default();
     for square in squares_iterator::<5>() {
-        assert!(position[square].is_empty());
+        assert!(position.get_stack(square).is_empty());
     }
     let position = <Position<6>>::default();
     for square in squares_iterator::<6>() {
-        assert!(position[square].is_empty());
+        assert!(position.get_stack(square).is_empty());
     }
 }
 
 #[test]
 fn get_set_test() {
-    let pieces = vec![WhiteFlat, BlackFlat, BlackFlat, WhiteWall];
+    let pieces = [WhiteFlat, BlackFlat, BlackFlat, WhiteWall];
     let mut position = <Position<5>>::default();
+
+    let mut stack = position.get_stack(Square::from_u8(12));
     for &piece in pieces.iter() {
-        position[Square(12)].push(piece);
+        stack.push(piece);
     }
-    assert_eq!(position[Square(12)].len(), 4);
-    assert_eq!(position[Square(12)].top_stone(), Some(WhiteWall));
+    position.set_stack(Square::from_u8(12), stack);
+
+    assert_eq!(position.get_stack(Square::from_u8(12)).len(), 4);
+    assert_eq!(
+        position.get_stack(Square::from_u8(12)).top_stone(),
+        Some(WhiteWall)
+    );
 
     for (i, &piece) in pieces.iter().enumerate() {
         assert_eq!(
             Some(piece),
-            position[Square(12)].get(i as u8),
+            position.get_stack(Square::from_u8(12)).get(i as u8),
             "{:?}",
-            position[Square(12)]
+            position.get_stack(Square::from_u8(12))
         );
     }
 
+    let mut stack = position.get_stack(Square::from_u8(12));
     for &piece in pieces.iter().rev() {
-        assert_eq!(Some(piece), position[Square(12)].pop(), "{:?}", position);
+        assert_eq!(Some(piece), stack.pop(), "{:?}", position);
     }
+    position.set_stack(Square::from_u8(12), stack);
 
-    assert!(position[Square(12)].is_empty());
+    assert!(position.get_stack(Square::from_u8(12)).is_empty());
 
+    let mut stack = position.get_stack(Square::from_u8(12));
     for &piece in pieces.iter() {
-        position[Square(12)].push(piece);
+        stack.push(piece);
     }
+    position.set_stack(Square::from_u8(12), stack);
 
+    let mut stack = position.get_stack(Square::from_u8(12));
     for &piece in pieces.iter() {
-        assert_eq!(
-            piece,
-            position[Square(12)].remove(0),
-            "{:?}",
-            position[Square(12)]
-        );
+        assert_eq!(piece, stack.remove(0), "{:?}", stack);
     }
 }
 
@@ -75,7 +82,7 @@ fn flatten_stack_test() {
 fn correct_number_of_directions_5s_test() {
     assert_eq!(
         squares_iterator::<5>()
-            .flat_map(|square| square.directions::<5>())
+            .flat_map(|square| square.directions())
             .count(),
         4 * 2 + 12 * 3 + 9 * 4
     );
@@ -85,7 +92,7 @@ fn correct_number_of_directions_5s_test() {
 fn correct_number_of_neighbours_test() {
     assert_eq!(
         squares_iterator::<5>()
-            .flat_map(|square| square.neighbours::<5>())
+            .flat_map(|square| square.neighbors())
             .count(),
         4 * 2 + 12 * 3 + 9 * 4
     );
@@ -97,7 +104,7 @@ fn correct_number_of_legal_directions_test() {
         squares_iterator::<5>()
             .flat_map(|square| [North, South, East, West]
                 .iter()
-                .filter_map(move |&direction| square.go_direction::<5>(direction)))
+                .filter_map(move |&direction| square.go_direction(direction)))
             .count(),
         4 * 2 + 12 * 3 + 9 * 4
     );
@@ -110,7 +117,7 @@ fn stones_left_behind_by_stack_movement_test() {
     do_moves_and_check_validity(&mut position, &["d3", "c3", "c4", "1d3<", "1c4-", "Sc4"]);
 
     let mv = position.move_from_san("2c3<11").unwrap();
-    if let Move::Move(square, _direction, stack_movement) = mv {
+    if let ExpMove::Move(square, _direction, stack_movement) = mv.expand() {
         assert_eq!(
             position
                 .top_stones_left_behind_by_move(square, &stack_movement)
@@ -126,7 +133,7 @@ fn stones_left_behind_by_stack_movement_test() {
     }
 
     let mv = position.move_from_san("3c3<21").unwrap();
-    if let Move::Move(square, _direction, stack_movement) = mv {
+    if let ExpMove::Move(square, _direction, stack_movement) = mv.expand() {
         assert_eq!(
             position
                 .top_stones_left_behind_by_move(square, &stack_movement)
@@ -158,24 +165,51 @@ fn black_can_win_with_road_test() {
 }
 
 #[test]
+fn big_8s_spread_test() {
+    let mut position = <Position<8>>::default();
+    do_moves_and_check_validity(
+        &mut position,
+        &[
+            "a1", "b1", "c1", "a2", "d1", "a3", "e1", "a4", "e1<", "a4-", "2d1<", "2a3-", "3c1<",
+            "3a2-", "4b1<", "b1",
+        ],
+    );
+    let mut moves = vec![];
+    position.generate_moves(&mut moves);
+    assert_eq!(moves.len(), 254 + 254 + (62 * 3));
+    for mv in moves.iter() {
+        assert_eq!(*mv, Move::compress(mv.expand()));
+
+        if let ExpMove::Move(_, _, stack_movement) = mv.expand() {
+            assert_ne!(stack_movement.into_inner(), 0)
+        }
+
+        let old_position = position.clone();
+        let reverse_move = position.do_move(*mv);
+        position.reverse_move(reverse_move);
+        assert_eq!(position, old_position);
+    }
+}
+
+#[test]
 fn game_win_test() {
     let mut position = <Position<5>>::default();
     for mv in [
-        Move::Place(Role::Flat, Square(13)),
-        Move::Place(Role::Flat, Square(12)),
-        Move::Place(Role::Flat, Square(7)),
-        Move::Place(Role::Flat, Square(14)),
-        Move::Place(Role::Flat, Square(2)),
-        Move::Place(Role::Flat, Square(11)),
-        Move::Place(Role::Flat, Square(17)),
-        Move::Place(Role::Flat, Square(10)),
+        Move::placement(Role::Flat, Square::from_u8(13)),
+        Move::placement(Role::Flat, Square::from_u8(12)),
+        Move::placement(Role::Flat, Square::from_u8(7)),
+        Move::placement(Role::Flat, Square::from_u8(14)),
+        Move::placement(Role::Flat, Square::from_u8(2)),
+        Move::placement(Role::Flat, Square::from_u8(11)),
+        Move::placement(Role::Flat, Square::from_u8(17)),
+        Move::placement(Role::Flat, Square::from_u8(10)),
     ]
     .iter()
     {
-        position.do_move(mv.clone());
+        position.do_move(*mv);
         assert!(position.game_result().is_none());
     }
-    position.do_move(Move::Place(Role::Flat, Square(22)));
+    position.do_move(Move::placement(Role::Flat, Square::from_u8(22)));
     assert_eq!(position.game_result(), Some(GameResult::WhiteWin));
 }
 
@@ -183,21 +217,21 @@ fn game_win_test() {
 fn game_win_test2() {
     let mut position = <Position<5>>::default();
     for mv in [
-        Move::Place(Role::Flat, Square(7)),
-        Move::Place(Role::Flat, Square(12)),
-        Move::Place(Role::Flat, Square(14)),
-        Move::Place(Role::Flat, Square(2)),
-        Move::Place(Role::Flat, Square(13)),
-        Move::Place(Role::Flat, Square(17)),
-        Move::Place(Role::Flat, Square(11)),
-        Move::Place(Role::Flat, Square(22)),
+        Move::placement(Role::Flat, Square::from_u8(7)),
+        Move::placement(Role::Flat, Square::from_u8(12)),
+        Move::placement(Role::Flat, Square::from_u8(14)),
+        Move::placement(Role::Flat, Square::from_u8(2)),
+        Move::placement(Role::Flat, Square::from_u8(13)),
+        Move::placement(Role::Flat, Square::from_u8(17)),
+        Move::placement(Role::Flat, Square::from_u8(11)),
+        Move::placement(Role::Flat, Square::from_u8(22)),
     ]
     .iter()
     {
-        position.do_move(mv.clone());
+        position.do_move(*mv);
         assert!(position.game_result().is_none());
     }
-    position.do_move(Move::Place(Role::Flat, Square(10)));
+    position.do_move(Move::placement(Role::Flat, Square::from_u8(10)));
     assert_eq!(position.game_result(), Some(GameResult::WhiteWin));
 }
 
@@ -246,14 +280,14 @@ fn suicide_into_points_loss_test() {
     let mut moves = vec![];
     position.generate_moves(&mut moves);
     for mv in moves.iter() {
-        let reverse_move = position.do_move(mv.clone());
-        match mv {
-            Move::Place(Role::Wall, _) => assert_eq!(
+        let reverse_move = position.do_move(*mv);
+        match mv.expand() {
+            ExpMove::Place(Role::Wall, _) => assert_eq!(
                 position.game_result(),
                 Some(GameResult::WhiteWin),
                 "Placing a wall is suicide"
             ),
-            Move::Place(Role::Flat, _) => assert_eq!(
+            ExpMove::Place(Role::Flat, _) => assert_eq!(
                 position.game_result(),
                 Some(GameResult::Draw),
                 "Placing a flatstone is a draw"
@@ -265,10 +299,10 @@ fn suicide_into_points_loss_test() {
 
     assert!(moves
         .iter()
-        .any(|mv| matches!(mv, Move::Place(Role::Wall, _))));
+        .any(|mv| matches!(mv.expand(), ExpMove::Place(Role::Wall, _))));
     assert!(moves
         .iter()
-        .any(|mv| matches!(mv, Move::Place(Role::Flat, _))));
+        .any(|mv| matches!(mv.expand(), ExpMove::Place(Role::Flat, _))));
 }
 
 #[test]
@@ -298,7 +332,7 @@ fn games_ends_when_board_is_full_test() {
     let mut position = <Position<5>>::start_position();
     let move_strings: Vec<String> = squares_iterator::<5>()
         .skip(1)
-        .map(|sq| sq.to_string::<5>())
+        .map(|sq| sq.to_string())
         .collect();
     do_moves_and_check_validity(
         &mut position,
@@ -340,8 +374,8 @@ fn critical_square_test() {
 
     do_moves_and_check_validity(&mut position, &move_strings);
 
-    let e1 = Square::parse_square::<5>("e1").unwrap();
-    let a5 = Square::parse_square::<5>("a5").unwrap();
+    let e1 = Square::parse_square("e1").unwrap();
+    let a5 = Square::parse_square("a5").unwrap();
     let group_data = position.group_data();
     assert!(group_data.is_critical_square(e1, Color::White));
     assert!(!group_data.is_critical_square(e1, Color::Black));
@@ -352,14 +386,12 @@ fn critical_square_test() {
     assert_eq!(
         group_data
             .critical_squares(Color::White)
-            .into_iter()
             .collect::<Vec<_>>(),
         vec![e1]
     );
     assert_eq!(
         group_data
             .critical_squares(Color::Black)
-            .into_iter()
             .collect::<Vec<_>>(),
         vec![a5]
     );
@@ -370,10 +402,10 @@ fn move_iterator_test() {
     let mut position = <Position<5>>::start_position();
     do_moves_and_check_validity(&mut position, &["a1", "e5"]);
     let mv = position.move_from_san("e5-").unwrap();
-    match mv {
-        Move::Move(square, direction, stack_movement) => assert_eq!(
+    match mv.expand() {
+        ExpMove::Move(square, direction, stack_movement) => assert_eq!(
             board_mod::MoveIterator::<5>::new(square, direction, stack_movement)
-                .map(|sq| sq.to_string::<5>())
+                .map(|sq| sq.to_string())
                 .collect::<Vec<String>>(),
             vec!["e5", "e4"]
         ),

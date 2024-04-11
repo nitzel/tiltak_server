@@ -3,15 +3,16 @@ use crate::search::MctsSetting;
 use crate::search::{self, MonteCarloTree};
 use crate::tests::TestPosition;
 use board_game_traits::Position as PositionTrait;
+use half::f16;
 use pgn_traits::PgnPosition;
 use std::time::Duration;
 
 #[test]
 fn exclude_moves_test() {
-    let excluded_moves = ["a1", "a6", "f1", "f6"]
+    let excluded_moves: Vec<Move<6>> = ["a1", "a6", "f1", "f6"]
         .iter()
-        .map(|move_string| Move::from_string::<6>(move_string).unwrap())
-        .collect::<Vec<Move>>();
+        .map(|move_string| Move::from_string(move_string).unwrap())
+        .collect::<Vec<Move<6>>>();
     let settings = MctsSetting::default()
         .arena_size_for_nodes(1000)
         .exclude_moves(excluded_moves.clone());
@@ -24,7 +25,7 @@ fn exclude_moves_test() {
     assert!(
         !excluded_moves.contains(&best_move),
         "{}",
-        best_move.to_string::<6>()
+        best_move.to_string()
     );
 }
 
@@ -164,12 +165,12 @@ fn do_not_play_suicide_move_as_black_test3() {
 fn best_move_temperature_test() {
     let position = <Position<5>>::start_position();
     let moves = vec![
-        (position.move_from_san("a1").unwrap(), 0.5),
-        (position.move_from_san("a2").unwrap(), 0.1),
-        (position.move_from_san("a3").unwrap(), 0.1),
-        (position.move_from_san("a4").unwrap(), 0.1),
-        (position.move_from_san("a5").unwrap(), 0.1),
-        (position.move_from_san("b1").unwrap(), 0.1),
+        (position.move_from_san("a1").unwrap(), f16::from_f32(0.5)),
+        (position.move_from_san("a2").unwrap(), f16::from_f32(0.1)),
+        (position.move_from_san("a3").unwrap(), f16::from_f32(0.1)),
+        (position.move_from_san("a4").unwrap(), f16::from_f32(0.1)),
+        (position.move_from_san("a5").unwrap(), f16::from_f32(0.1)),
+        (position.move_from_san("b1").unwrap(), f16::from_f32(0.1)),
     ];
 
     let mut rng = rand::thread_rng();
@@ -177,7 +178,8 @@ fn best_move_temperature_test() {
     let mut b1_selected = 0;
 
     for _ in 0..1000 {
-        let move_string_selected = search::best_move(&mut rng, 1.0, &moves).to_string::<5>();
+        let move_string_selected =
+            search::best_move::<_, 5>(&mut rng, Some(1.0), &moves).to_string();
         if move_string_selected == "a1" {
             top_move_selected += 1;
         } else if move_string_selected == "b1" {

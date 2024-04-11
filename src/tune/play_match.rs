@@ -3,30 +3,34 @@ use std::time::Instant;
 
 use board_game_traits::{Color, Position as PositionTrait};
 use chrono::Datelike;
+use half::f16;
 use pgn_traits::PgnPosition;
 use rand::seq::SliceRandom;
 
+use crate::position::ExpMove;
+use crate::position::Komi;
 use crate::position::Move;
 use crate::position::Position;
 use crate::position::Role;
 use crate::ptn::{Game, PtnMove};
 use crate::search;
+use crate::search::MctsSetting;
 use crate::search::TimeControl;
-use crate::search::{MctsSetting, Score};
 
 /// Play a single training game between two parameter sets
 pub fn play_game<const S: usize>(
     white_settings: &MctsSetting<S>,
     black_settings: &MctsSetting<S>,
-    opening: &[Move],
+    komi: Komi,
+    opening: &[Move<S>],
     temperature: f64,
     time_control: &TimeControl,
-) -> (Game<Position<S>>, Vec<Vec<(Move, Score)>>) {
-    let mut position = Position::start_position();
+) -> (Game<Position<S>>, Vec<Vec<(Move<S>, f16)>>) {
+    let mut position = Position::start_position_with_komi(komi);
     let mut game_moves = opening.to_vec();
     let mut move_scores = vec![vec![]; opening.len()];
     for mv in opening {
-        position.do_move(mv.clone());
+        position.do_move(*mv);
     }
     let mut rng = rand::thread_rng();
 
@@ -76,26 +80,26 @@ pub fn play_game<const S: usize>(
         // For white's first and second move, choose a random flatstone move
         // This reduces white's first move advantage, and prevents white from "cheesing"
         // the training games by always playing 1.c3 or 2.Cc3
-        let best_move = if position.half_moves_played() == 0 || position.half_moves_played() == 2 {
+        let best_move = if komi.half_komi() < 4
+            && (position.half_moves_played() == 0 || position.half_moves_played() == 2)
+        {
             let flat_moves = moves_scores
                 .iter()
                 .map(|(mv, _)| mv)
-                .filter(|mv| matches!(*mv, Move::Place(Role::Flat, _)))
+                .filter(|mv| matches!(mv.expand(), ExpMove::Place(Role::Flat, _)))
                 .collect::<Vec<_>>();
-            (*flat_moves.choose(&mut rng).unwrap()).clone()
-        }
-        // Turn off temperature in the middle-game, when all games are expected to be unique
-        else if position.half_moves_played() < 10 {
-            search::best_move(&mut rand::thread_rng(), temperature, &moves_scores[..])
+            **flat_moves.choose(&mut rng).unwrap()
         } else {
-            search::best_move(&mut rand::thread_rng(), 0.1, &moves_scores[..])
+            // Turn off temperature after the opening (after `2 * (S - 1)` ply), when all games are expected to be unique
+            let temperature = (position.half_moves_played() < 2 * (S - 1)).then_some(temperature);
+            search::best_move(&mut rand::thread_rng(), temperature, &moves_scores[..])
         };
-        position.do_move(best_move.clone());
+        position.do_move(best_move);
         game_moves.push(best_move);
         move_scores.push(moves_scores);
     }
 
-    let date = chrono::Local::today();
+    let date = chrono::Local::now();
 
     let tags = vec![
         ("Event".to_string(), "Tiltak training".to_string()),
@@ -112,7 +116,7 @@ pub fn play_game<const S: usize>(
 
     (
         Game {
-            start_position: Position::default(),
+            start_position: Position::start_position_with_komi(komi),
             moves: game_moves
                 .into_iter()
                 .map(|mv| PtnMove {

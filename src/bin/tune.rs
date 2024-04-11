@@ -1,81 +1,162 @@
 use std::path::Path;
+use std::process::exit;
 
-use clap::{App, Arg, SubCommand};
+use clap::{Arg, Command};
 
 use tiltak::evaluation::parameters::{
-    NUM_POLICY_FEATURES_4S, NUM_POLICY_FEATURES_5S, NUM_POLICY_FEATURES_6S, NUM_VALUE_FEATURES_4S,
-    NUM_VALUE_FEATURES_5S, NUM_VALUE_FEATURES_6S, POLICY_PARAMS_4S, POLICY_PARAMS_5S,
-    POLICY_PARAMS_6S, VALUE_PARAMS_4S, VALUE_PARAMS_5S, VALUE_PARAMS_6S,
+    self, NUM_POLICY_FEATURES_4S, NUM_POLICY_FEATURES_5S, NUM_POLICY_FEATURES_6S,
+    NUM_VALUE_FEATURES_4S, NUM_VALUE_FEATURES_5S, NUM_VALUE_FEATURES_6S,
 };
+use tiltak::position::Komi;
+use tiltak::tune::training::TrainingOptions;
 use tiltak::tune::{spsa, training};
 
 fn main() {
-    let app = App::new("Tiltak variable tuning")
+    let app = Command::new("Tiltak variable tuning")
         .version("0.1")
         .author("Morten Lohne")
         .arg(
-            Arg::with_name("size")
+            Arg::new("size")
                 .global(true)
-                .short("s")
+                .short('s')
                 .long("size")
                 .help("Board size")
-                .takes_value(true)
-                .default_value("5")
-                .possible_values(&["4", "5", "6"]),
-        )
-        .subcommand(SubCommand::with_name("selfplay")
-            .about("Tune value and policy constants by playing against itself. Will write the games to text files in the working directory."))
-        .subcommand(SubCommand::with_name("selfplay-from-scratch")
-            .about("Tune value and policy constants from randomly initialized values by playing against itself. Will write the games to text files in the working directory."))
-        .subcommand(SubCommand::with_name("continue-selfplay")
+                .num_args(1)
+                .value_parser(clap::value_parser!(u64).range(4..=6)))
+        .arg(
+            Arg::new("komi")
+                .global(true)
+                .long("komi")
+                .num_args(1)
+                .allow_hyphen_values(true)
+                .value_parser(|input: &str| {
+                    input.parse::<Komi>()
+                }))
+        .subcommand(Command::new("selfplay")
+            .about("Tune value and policy constants by playing against itself. Will write the games to text files in the working directory.")
+            .arg(
+                Arg::new("nodes")
+                    .long("nodes")
+                    .help("Number of MCTS nodes per selfplay game.")
+                    .default_value("50000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64)))
+            .arg(
+                Arg::new("batch-size")
+                    .long("batch-size")
+                    .help("Number of games per training batch. Eval parameters are re-tuned after each batch.")
+                    .default_value("1000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64))))
+        .subcommand(Command::new("selfplay-from-scratch")
+            .about("Tune value and policy constants from randomly initialized values by playing against itself. Will write the games to text files in the working directory.")
+            .arg(
+                Arg::new("nodes")
+                    .long("nodes")
+                    .help("Number of MCTS nodes per selfplay game.")
+                    .default_value("50000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64)))
+            .arg(
+                Arg::new("batch-size")
+                    .long("batch-size")
+                    .help("Number of games per training batch. Eval parameters are re-tuned after each batch.")
+                    .default_value("1000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64))))
+        .subcommand(Command::new("continue-selfplay")
             .about("Continue selfplay training")
-            .arg(Arg::with_name("training-id")
+            .arg(
+                Arg::new("nodes")
+                    .long("nodes")
+                    .help("Number of MCTS nodes per selfplay game.")
+                    .default_value("50000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64)))
+            .arg(
+                Arg::new("batch-size")
+                    .long("batch-size")
+                    .help("Number of games per training batch. Eval parameters are re-tuned after each batch.")
+                    .default_value("1000")
+                    .num_args(1)
+                    .value_parser(clap::value_parser!(u64)))
+            .arg(Arg::new("training-id")
                 .long("training-id")
-                .takes_value(true)
+                .num_args(1)
                 .required(true)
+                .value_parser(clap::value_parser!(u64)),
             ))
-        .subcommand(SubCommand::with_name("value-from-file")
+        .subcommand(Command::new("value-from-file")
                 .about("Tune value constants from randomly initialized values, using the given ptn file. Note that the ptn parser is completely broken, and will probably fail on any files not generated by this program itself.")
-                .arg(Arg::with_name("file-name")
+                .arg(Arg::new("file-name")
                     .index(1)
                     .required(true)
                     .value_name("games.ptn")))
         .subcommand(
-            SubCommand::with_name("both-from-file")
+            Command::new("both-from-file")
                 .about("Tune value and policy constants from randomly initialized values, using the given text file")
-                .arg(Arg::with_name("value-file-name")
+                .arg(Arg::new("value-file-name")
                     .index(1)
                     .required(true)
                     .value_name("games.ptn"))
-                .arg(Arg::with_name("policy-file-name")
+                .arg(Arg::new("policy-file-name")
                     .index(2)
                     .required(true)
                     .value_name("move_scores.txt"))
         )
-        .subcommand(SubCommand::with_name("spsa")
+        .subcommand(Command::new("spsa")
             .about("Tune exploration parameters using SPSA. Starting values are hard-coded.")
-            .arg(Arg::with_name("book")
-                .takes_value(true)
+            .arg(Arg::new("book")
+                .num_args(1)
                 .long("book")
                 .help("Opening book for the games.")
                 .value_name("book.txt")
-            ));
+            )).arg_required_else_help(true);
 
     let matches = app.get_matches();
-    let size: usize = matches.value_of("size").unwrap().parse().unwrap();
+    // Required global options doesn't work properly in Clap,
+    // so manually check that they are present
+    let Some(size) = matches.get_one::<u64>("size") else {
+        eprintln!("Error: --size is required");
+        exit(1)
+    };
+    let Some(komi) = matches.get_one::<Komi>("komi") else {
+        eprintln!("Error: --komi is required");
+        exit(1)
+    };
+
+    let num_games_for_tuning = match size {
+        4 => 20_000,
+        5 => 15_000,
+        _ => 12_000,
+    };
 
     match matches.subcommand() {
-        ("selfplay", _) => {
-            for i in 0.. {
-                let file_name = format!("games{}_s{}_batch0.ptn", i, size);
+        Some(("selfplay", arg)) => {
+            for training_id in 0.. {
+                let file_name = format!("games{}_s{}_batch0.ptn", training_id, size);
                 if !Path::new(&file_name).exists() {
+                    let batch_size = *arg.get_one::<u64>("batch-size").unwrap() as usize;
+                    let nodes_per_game = *arg.get_one::<u64>("nodes").unwrap() as usize;
+                    let options = TrainingOptions {
+                        training_id,
+                        batch_size,
+                        num_games_for_tuning,
+                        nodes_per_game,
+                    };
                     match size {
                         4 => training::train_perpetually::<
                             4,
                             NUM_VALUE_FEATURES_4S,
                             NUM_POLICY_FEATURES_4S,
                         >(
-                            i, &VALUE_PARAMS_4S, &POLICY_PARAMS_4S, vec![], vec![], 0
+                            options,
+                            *komi,
+                            *parameters::value_features_4s(*komi),
+                            *parameters::policy_features_4s(*komi),
+                            vec![],
+                            vec![],
+                            0,
                         )
                         .unwrap(),
                         5 => training::train_perpetually::<
@@ -83,7 +164,13 @@ fn main() {
                             NUM_VALUE_FEATURES_5S,
                             NUM_POLICY_FEATURES_5S,
                         >(
-                            i, &VALUE_PARAMS_5S, &POLICY_PARAMS_5S, vec![], vec![], 0
+                            options,
+                            *komi,
+                            *parameters::value_features_5s(*komi),
+                            *parameters::policy_features_5s(*komi),
+                            vec![],
+                            vec![],
+                            0,
                         )
                         .unwrap(),
                         6 => training::train_perpetually::<
@@ -91,7 +178,13 @@ fn main() {
                             NUM_VALUE_FEATURES_6S,
                             NUM_POLICY_FEATURES_6S,
                         >(
-                            i, &VALUE_PARAMS_6S, &POLICY_PARAMS_6S, vec![], vec![], 0
+                            options,
+                            *komi,
+                            *parameters::value_features_6s(*komi),
+                            *parameters::policy_features_6s(*komi),
+                            vec![],
+                            vec![],
+                            0,
                         )
                         .unwrap(),
                         _ => panic!("Size {} not supported.", size),
@@ -102,28 +195,36 @@ fn main() {
                 }
             }
         }
-        ("selfplay-from-scratch", _) => {
-            for i in 0.. {
-                let file_name = format!("games{}_s{}_batch0.ptn", i, size);
+        Some(("selfplay-from-scratch", arg)) => {
+            for training_id in 0.. {
+                let file_name = format!("games{}_{}s_batch0.ptn", training_id, size);
                 if !Path::new(&file_name).exists() {
+                    let batch_size = *arg.get_one::<u64>("batch-size").unwrap() as usize;
+                    let nodes_per_game = *arg.get_one::<u64>("nodes").unwrap() as usize;
+                    let options = TrainingOptions {
+                        training_id,
+                        batch_size,
+                        num_games_for_tuning,
+                        nodes_per_game,
+                    };
                     match size {
                         4 => training::train_from_scratch::<
                             4,
                             NUM_VALUE_FEATURES_4S,
                             NUM_POLICY_FEATURES_4S,
-                        >(i)
+                        >(options, *komi)
                         .unwrap(),
                         5 => training::train_from_scratch::<
                             5,
                             NUM_VALUE_FEATURES_5S,
                             NUM_POLICY_FEATURES_5S,
-                        >(i)
+                        >(options, *komi)
                         .unwrap(),
                         6 => training::train_from_scratch::<
                             6,
                             NUM_VALUE_FEATURES_6S,
                             NUM_POLICY_FEATURES_6S,
-                        >(i)
+                        >(options, *komi)
                         .unwrap(),
                         _ => panic!("Size {} not supported.", size),
                     }
@@ -133,57 +234,68 @@ fn main() {
                 }
             }
         }
-        ("continue-selfplay", Some(arg)) => {
-            let training_id: usize = arg.value_of("training-id").unwrap().parse().unwrap();
+        Some(("continue-selfplay", arg)) => {
+            let training_id = *arg.get_one::<u64>("training-id").unwrap() as usize;
+            let batch_size = *arg.get_one::<u64>("batch-size").unwrap() as usize;
+            let nodes_per_game = *arg.get_one::<u64>("nodes").unwrap() as usize;
+            let options = TrainingOptions {
+                training_id,
+                batch_size,
+                num_games_for_tuning,
+                nodes_per_game,
+            };
             match size {
                 4 => {
                     training::continue_training::<4, NUM_VALUE_FEATURES_4S, NUM_POLICY_FEATURES_4S>(
-                        training_id,
+                        options, *komi,
                     )
                     .unwrap()
                 }
                 5 => {
                     training::continue_training::<5, NUM_VALUE_FEATURES_5S, NUM_POLICY_FEATURES_5S>(
-                        training_id,
+                        options, *komi,
                     )
                     .unwrap()
                 }
                 6 => {
                     training::continue_training::<6, NUM_VALUE_FEATURES_6S, NUM_POLICY_FEATURES_6S>(
-                        training_id,
+                        options, *komi,
                     )
                     .unwrap()
                 }
                 _ => panic!("Size {} not supported.", size),
             }
         }
-        ("value-from-file", Some(arg)) => {
-            let file_name = arg.value_of("file-name").unwrap();
+        Some(("value-from-file", arg)) => {
+            let file_name = arg.get_one::<String>("file-name").unwrap();
             match size {
                 4 => {
-                    let value_params =
-                        training::tune_value_from_file::<4, NUM_VALUE_FEATURES_4S>(file_name)
-                            .unwrap();
+                    let value_params = training::tune_value_from_file::<4, NUM_VALUE_FEATURES_4S>(
+                        file_name, *komi,
+                    )
+                    .unwrap();
                     println!("{:?}", value_params);
                 }
                 5 => {
-                    let value_params =
-                        training::tune_value_from_file::<5, NUM_VALUE_FEATURES_5S>(file_name)
-                            .unwrap();
+                    let value_params = training::tune_value_from_file::<5, NUM_VALUE_FEATURES_5S>(
+                        file_name, *komi,
+                    )
+                    .unwrap();
                     println!("{:?}", value_params);
                 }
                 6 => {
-                    let value_params =
-                        training::tune_value_from_file::<6, NUM_VALUE_FEATURES_6S>(file_name)
-                            .unwrap();
+                    let value_params = training::tune_value_from_file::<6, NUM_VALUE_FEATURES_6S>(
+                        file_name, *komi,
+                    )
+                    .unwrap();
                     println!("{:?}", value_params);
                 }
                 _ => panic!("Size {} not supported.", size),
             }
         }
-        ("both-from-file", Some(arg)) => {
-            let value_file_name = arg.value_of("value-file-name").unwrap();
-            let policy_file_name = arg.value_of("policy-file-name").unwrap();
+        Some(("both-from-file", arg)) => {
+            let value_file_name = arg.get_one::<String>("value-file-name").unwrap();
+            let policy_file_name = arg.get_one::<String>("policy-file-name").unwrap();
             match size {
                 4 => {
                     let (value_params, policy_params) =
@@ -191,7 +303,7 @@ fn main() {
                             4,
                             NUM_VALUE_FEATURES_4S,
                             NUM_POLICY_FEATURES_4S,
-                        >(value_file_name, policy_file_name)
+                        >(value_file_name, policy_file_name, *komi)
                         .unwrap();
                     println!("Value: {:?}", value_params);
                     println!("Policy: {:?}", policy_params);
@@ -202,7 +314,7 @@ fn main() {
                             5,
                             NUM_VALUE_FEATURES_5S,
                             NUM_POLICY_FEATURES_5S,
-                        >(value_file_name, policy_file_name)
+                        >(value_file_name, policy_file_name, *komi)
                         .unwrap();
                     println!("Value: {:?}", value_params);
                     println!("Policy: {:?}", policy_params);
@@ -213,7 +325,7 @@ fn main() {
                             6,
                             NUM_VALUE_FEATURES_6S,
                             NUM_POLICY_FEATURES_6S,
-                        >(value_file_name, policy_file_name)
+                        >(value_file_name, policy_file_name, *komi)
                         .unwrap();
                     println!("Value: {:?}", value_params);
                     println!("Policy: {:?}", policy_params);
@@ -221,15 +333,15 @@ fn main() {
                 _ => panic!("Size {} not supported.", size),
             }
         }
-        ("spsa", Some(arg)) => {
+        Some(("spsa", arg)) => {
             let mut variables = vec![
                 spsa::Variable {
-                    value: 1.43,
+                    value: 1.50,
                     delta: 0.20,
                     apply_factor: 0.005,
                 },
                 spsa::Variable {
-                    value: 2800.0,
+                    value: 2200.0,
                     delta: 1000.0,
                     apply_factor: 0.005,
                 },
@@ -240,16 +352,27 @@ fn main() {
                 },
             ];
             match size {
-                4 => spsa::tune::<4>(&mut variables, arg.value_of("book")),
-                5 => spsa::tune::<5>(&mut variables, arg.value_of("book")),
-                6 => spsa::tune::<6>(&mut variables, arg.value_of("book")),
+                4 => spsa::tune::<4>(
+                    &mut variables,
+                    arg.get_one::<String>("book").map(|s| s.as_ref()),
+                    *komi,
+                ),
+                5 => spsa::tune::<5>(
+                    &mut variables,
+                    arg.get_one::<String>("book").map(|s| s.as_ref()),
+                    *komi,
+                ),
+                6 => spsa::tune::<6>(
+                    &mut variables,
+                    arg.get_one::<String>("book").map(|s| s.as_ref()),
+                    *komi,
+                ),
                 _ => panic!("Size {} not supported.", size),
             }
         }
-        ("", None) => {
+        Some((command, args)) => panic!("Invalid command {} with arguments {:?}", command, args),
+        None => {
             println!("Error: No subcommand selected. Try the 'help' subcommand for a list.");
-            println!("{}", matches.usage());
         }
-        (command, args) => panic!("Invalid command {} with arguments {:?}", command, args),
     }
 }

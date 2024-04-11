@@ -1,8 +1,9 @@
 use crate::position::color_trait::ColorTr;
-use crate::position::Move;
 use crate::position::{
-    squares_iterator, Direction, Movement, Piece, Position, Role::*, Square, StackMovement,
+    squares_iterator, Direction, Movement, Position, Role::*, Square, StackMovement,
 };
+use crate::position::{Move, Piece};
+use arrayvec::ArrayVec;
 use board_game_traits::Position as PositionTrait;
 use std::iter;
 
@@ -16,59 +17,71 @@ impl<const S: usize> Position<S> {
         moves: &mut E,
     ) {
         for square in squares_iterator::<S>() {
-            match self[square].top_stone() {
-                None => {
-                    if Us::stones_left(self) > 0 {
-                        moves.extend(iter::once(Move::Place(Flat, square)));
-                        moves.extend(iter::once(Move::Place(Wall, square)));
-                    }
-                    if Us::caps_left(self) > 0 {
-                        moves.extend(iter::once(Move::Place(Cap, square)));
-                    }
+            self.generate_moves_for_square_colortr::<E, Us, Them>(moves, square)
+        }
+    }
+
+    pub(crate) fn generate_moves_for_square_colortr<
+        E: Extend<<Self as PositionTrait>::Move>,
+        Us: ColorTr,
+        Them: ColorTr,
+    >(
+        &self,
+        moves: &mut E,
+        square: Square<S>,
+    ) {
+        match self.top_stones()[square] {
+            None => {
+                if Us::stones_left(self) > 0 {
+                    moves.extend(iter::once(Move::placement(Flat, square)));
+                    moves.extend(iter::once(Move::placement(Wall, square)));
                 }
-                Some(piece) if Us::piece_is_ours(piece) => {
-                    for direction in square.directions::<S>() {
-                        let mut movements = vec![];
-                        if piece == Us::cap_piece() {
-                            self.generate_moving_moves_cap::<Us>(
-                                direction,
-                                square,
-                                square,
-                                self[square].len() as u8,
-                                StackMovement::new(),
-                                &mut movements,
-                            );
-                        } else if Us::piece_is_ours(piece) {
-                            self.generate_moving_moves_non_cap::<Us>(
-                                direction,
-                                square,
-                                square,
-                                self[square].len() as u8,
-                                StackMovement::new(),
-                                &mut movements,
-                            );
-                        }
-                        for movements in movements.into_iter().filter(|mv| !mv.is_empty()) {
-                            let mv = Move::Move(square, direction, movements);
-                            moves.extend(iter::once(mv));
-                        }
-                    }
+                if Us::caps_left(self) > 0 {
+                    moves.extend(iter::once(Move::placement(Cap, square)));
                 }
-                Some(_) => (),
             }
+            Some(piece) if Us::piece_is_ours(piece) => {
+                for direction in square.directions() {
+                    let mut movements = ArrayVec::new();
+                    if piece == Us::cap_piece() {
+                        self.generate_moving_moves_cap::<Us>(
+                            direction,
+                            square,
+                            square,
+                            self.stack_heights()[square],
+                            StackMovement::new(),
+                            &mut movements,
+                        );
+                    } else if Us::piece_is_ours(piece) {
+                        self.generate_moving_moves_non_cap::<Us>(
+                            direction,
+                            square,
+                            square,
+                            self.stack_heights()[square],
+                            StackMovement::new(),
+                            &mut movements,
+                        );
+                    }
+                    for movements in movements.into_iter().filter(|mv| !mv.is_empty()) {
+                        let mv = Move::movement(square, direction, movements);
+                        moves.extend(iter::once(mv));
+                    }
+                }
+            }
+            Some(_) => (),
         }
     }
 
     fn generate_moving_moves_cap<Colorr: ColorTr>(
         &self,
         direction: Direction,
-        origin_square: Square,
-        square: Square,
+        origin_square: Square<S>,
+        square: Square<S>,
         pieces_carried: u8,
-        partial_movement: StackMovement,
-        movements: &mut Vec<StackMovement>,
+        partial_movement: StackMovement<S>,
+        movements: &mut ArrayVec<StackMovement<S>, 255>, // 2^max_size - 1
     ) {
-        if let Some(neighbour) = square.go_direction::<S>(direction) {
+        if let Some(neighbour) = square.go_direction(direction) {
             let pieces_held = if square == origin_square {
                 S as u8
             } else {
@@ -79,18 +92,18 @@ impl<const S: usize> Position<S> {
             } else {
                 (pieces_carried - 1).min(S as u8)
             };
-            let neighbour_piece = self[neighbour].top_stone();
+            let neighbour_piece = self.top_stones()[neighbour];
             if neighbour_piece.map(Piece::role) == Some(Cap) {
                 return;
             }
             if neighbour_piece.map(Piece::role) == Some(Wall) && max_pieces_to_take > 0 {
                 let mut new_movement = partial_movement;
-                new_movement.push::<S>(Movement { pieces_to_take: 1 }, pieces_held);
+                new_movement.push(Movement { pieces_to_take: 1 }, pieces_held);
                 movements.push(new_movement);
             } else {
                 for pieces_to_take in 1..=max_pieces_to_take {
                     let mut new_movement = partial_movement;
-                    new_movement.push::<S>(Movement { pieces_to_take }, pieces_held);
+                    new_movement.push(Movement { pieces_to_take }, pieces_held);
 
                     self.generate_moving_moves_cap::<Colorr>(
                         direction,
@@ -102,7 +115,7 @@ impl<const S: usize> Position<S> {
                     );
 
                     // Finish the movement
-                    new_movement.push::<S>(Movement { pieces_to_take: 0 }, pieces_to_take);
+                    new_movement.push(Movement { pieces_to_take: 0 }, pieces_to_take);
 
                     movements.push(new_movement);
                 }
@@ -113,19 +126,18 @@ impl<const S: usize> Position<S> {
     fn generate_moving_moves_non_cap<Colorr: ColorTr>(
         &self,
         direction: Direction,
-        origin_square: Square,
-        square: Square,
+        origin_square: Square<S>,
+        square: Square<S>,
         pieces_carried: u8,
-        partial_movement: StackMovement,
-        movements: &mut Vec<StackMovement>,
+        partial_movement: StackMovement<S>,
+        movements: &mut ArrayVec<StackMovement<S>, 255>, // 2^max_size - 1
     ) {
-        if let Some(neighbour) = square.go_direction::<S>(direction) {
-            let neighbour_piece = self[neighbour].top_stone();
-            if neighbour_piece.is_some() && neighbour_piece.unwrap().role() != Flat {
+        if let Some(neighbour) = square.go_direction(direction) {
+            let neighbour_piece = self.top_stones()[neighbour];
+            if neighbour_piece.is_some_and(|piece| piece.role() != Flat) {
                 return;
             }
 
-            let neighbour = square.go_direction::<S>(direction).unwrap();
             let pieces_held = if square == origin_square {
                 S as u8
             } else {
@@ -138,7 +150,7 @@ impl<const S: usize> Position<S> {
             };
             for pieces_to_take in 1..=max_pieces_to_take {
                 let mut new_movement = partial_movement;
-                new_movement.push::<S>(Movement { pieces_to_take }, pieces_held);
+                new_movement.push(Movement { pieces_to_take }, pieces_held);
 
                 self.generate_moving_moves_non_cap::<Colorr>(
                     direction,
@@ -150,7 +162,7 @@ impl<const S: usize> Position<S> {
                 );
 
                 // Finish the movement
-                new_movement.push::<S>(Movement { pieces_to_take: 0 }, pieces_to_take);
+                new_movement.push(Movement { pieces_to_take: 0 }, pieces_to_take);
 
                 movements.push(new_movement);
             }

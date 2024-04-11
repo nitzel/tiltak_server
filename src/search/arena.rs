@@ -1,20 +1,30 @@
 use std::{
-    alloc,
-    alloc::Layout,
-    any, fmt,
+    alloc::{self, Layout},
+    any,
+    error::Error,
+    fmt::{self, Display},
     marker::PhantomData,
     mem,
     num::NonZeroU32,
     slice,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
 };
 
-pub struct Arena<const S: usize = 24> {
+pub struct Arena<const S: usize = 16> {
     data: *mut u8,
     orig_pointer: *mut u8,
     layout: Layout,
     next_index: AtomicU32,
     max_index: u32,
+    pub stats: ArenaStats,
+}
+
+#[derive(Debug, Default)]
+pub struct ArenaStats {
+    pub bytes_allocated: AtomicUsize,
+    pub bytes_structs: AtomicUsize,
+    pub bytes_slices: AtomicUsize,
+    pub padding_bytes: AtomicUsize,
 }
 
 impl<const S: usize> fmt::Debug for Arena<S> {
@@ -37,7 +47,7 @@ impl<T> Index<T> {
     fn new(data: NonZeroU32) -> Self {
         Self {
             data,
-            phantom: PhantomData::default(),
+            phantom: PhantomData,
         }
     }
 }
@@ -54,7 +64,7 @@ impl<T> SliceIndex<T> {
         Self {
             data,
             length,
-            phantom: PhantomData::default(),
+            phantom: PhantomData,
         }
     }
 }
@@ -78,20 +88,41 @@ const fn raw_alignment(mut alignment: usize) -> usize {
     raw_alignment
 }
 
+#[derive(Debug)]
+pub enum ArenaError {
+    AllocationFailed(usize),
+    InvalidSettings,
+}
+
+impl Display for ArenaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ArenaError::AllocationFailed(num_bytes) => {
+                write!(f, "Failed to allocate {} bytes for arena", num_bytes)
+            }
+            ArenaError::InvalidSettings => write!(f, "Invalid settings for arena"),
+        }
+    }
+}
+
+impl Error for ArenaError {}
+
 impl<const S: usize> Arena<S> {
-    pub fn new(num_slots: u32) -> Option<Self> {
+    pub fn new(num_slots: u32) -> Result<Self, ArenaError> {
         if S == 0 || num_slots == 0 || num_slots >= u32::MAX - 1 {
-            return None;
+            return Err(ArenaError::InvalidSettings);
         }
         let raw_alignment = raw_alignment(S);
+        let size = (num_slots as usize + 2) * S;
 
-        let layout = Layout::from_size_align((num_slots as usize + 2) * S, raw_alignment).ok()?;
+        let layout = Layout::from_size_align(size, raw_alignment)
+            .map_err(|_| ArenaError::InvalidSettings)?;
 
         let (data, orig_pointer) = unsafe {
             let ptr = alloc::alloc(layout);
 
             if ptr.is_null() {
-                return None;
+                return Err(ArenaError::AllocationFailed(size));
             }
 
             // Make sure the pointer is correctly aligned
@@ -102,12 +133,13 @@ impl<const S: usize> Arena<S> {
             }
         };
 
-        Some(Self {
+        Ok(Self {
             data,
             orig_pointer,
             layout,
             next_index: AtomicU32::new(1),
             max_index: num_slots + 1,
+            stats: ArenaStats::default(),
         })
     }
 
@@ -178,29 +210,59 @@ impl<const S: usize> Arena<S> {
             *ptr = value;
         }
 
+        let bytes_required = Self::num_slots_required::<T>() as usize * S;
+        self.stats
+            .bytes_allocated
+            .fetch_add(bytes_required, Ordering::Relaxed);
+        self.stats
+            .padding_bytes
+            .fetch_add(bytes_required - mem::size_of::<T>(), Ordering::Relaxed);
+        self.stats
+            .bytes_structs
+            .fetch_add(bytes_required, Ordering::Relaxed);
+
         Some(Index::new(NonZeroU32::new(index).unwrap()))
     }
 
-    pub fn add_slice<T>(&self, values: &mut Vec<T>) -> Option<SliceIndex<T>> {
+    pub fn add_slice<T, I: ExactSizeIterator<Item = T>>(
+        &self,
+        mut source: I,
+    ) -> Option<SliceIndex<T>> {
         assert!(self.supports_type::<T>());
 
-        let length = values.len();
+        let length = source.len();
 
         if length == 0 {
             return Some(SliceIndex::default());
         }
+        if length > u32::MAX as usize {
+            return None;
+        }
 
-        let index =
-            self.get_index_for_element(Self::num_slots_required::<T>() * values.len() as u32)?;
+        let index = self.get_index_for_element(Self::num_slots_required::<T>() * length as u32)?;
 
         let mut ptr = unsafe { self.ptr_to_index(index) as *mut T };
 
-        for value in values.drain(..) {
+        for _ in 0..length {
             unsafe {
-                *ptr = value;
+                *ptr = source.next().expect("Iterator yielded too few items");
                 ptr = ptr.add(1);
             }
         }
+
+        assert!(source.next().is_none());
+
+        let bytes_required = Self::num_slots_required::<T>() as usize * length * S;
+        self.stats
+            .bytes_allocated
+            .fetch_add(bytes_required, Ordering::Relaxed);
+        self.stats.padding_bytes.fetch_add(
+            bytes_required - mem::size_of::<T>() * length,
+            Ordering::Relaxed,
+        );
+        self.stats
+            .bytes_slices
+            .fetch_add(bytes_required, Ordering::Relaxed);
 
         Some(SliceIndex::new(
             NonZeroU32::new(index).unwrap(),

@@ -1,17 +1,21 @@
 //* Traits for white/black colors. Useful for writing functions that are generic over color,
 //* like how the move generator is structured.
 
-use board_game_traits::Color;
+use board_game_traits::{Color, GameResult};
 
 use crate::position::bitboard::BitBoard;
+use crate::position::utils::Piece;
 use crate::position::utils::Piece::{
     BlackCap, BlackFlat, BlackWall, WhiteCap, WhiteFlat, WhiteWall,
 };
-use crate::position::utils::{Piece, Square};
 use crate::position::{GroupData, Position};
+
+use super::Square;
 
 pub(crate) trait ColorTr {
     fn color() -> Color;
+
+    fn win() -> GameResult;
 
     fn stones_left<const S: usize>(position: &Position<S>) -> u8;
 
@@ -37,7 +41,7 @@ pub(crate) trait ColorTr {
 
     fn piece_is_ours(piece: Piece) -> bool;
 
-    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square) -> bool;
+    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square<S>) -> bool;
 
     fn critical_squares<const S: usize>(group_data: &GroupData<S>) -> BitBoard;
 }
@@ -47,6 +51,10 @@ pub(crate) struct WhiteTr {}
 impl ColorTr for WhiteTr {
     fn color() -> Color {
         Color::White
+    }
+
+    fn win() -> GameResult {
+        GameResult::WhiteWin
     }
 
     fn stones_left<const S: usize>(position: &Position<S>) -> u8 {
@@ -97,8 +105,8 @@ impl ColorTr for WhiteTr {
         piece == WhiteFlat || piece == WhiteWall || piece == WhiteCap
     }
 
-    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square) -> bool {
-        group_data.white_critical_squares.get(square.0)
+    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square<S>) -> bool {
+        group_data.white_critical_squares.get_square(square)
     }
 
     fn critical_squares<const S: usize>(group_data: &GroupData<S>) -> BitBoard {
@@ -111,6 +119,10 @@ pub(crate) struct BlackTr {}
 impl ColorTr for BlackTr {
     fn color() -> Color {
         Color::Black
+    }
+
+    fn win() -> GameResult {
+        GameResult::BlackWin
     }
 
     fn stones_left<const S: usize>(position: &Position<S>) -> u8 {
@@ -161,8 +173,8 @@ impl ColorTr for BlackTr {
         piece == BlackFlat || piece == BlackCap || piece == BlackWall
     }
 
-    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square) -> bool {
-        group_data.black_critical_squares.get(square.0)
+    fn is_critical_square<const S: usize>(group_data: &GroupData<S>, square: Square<S>) -> bool {
+        group_data.black_critical_squares.get_square(square)
     }
 
     fn critical_squares<const S: usize>(group_data: &GroupData<S>) -> BitBoard {
