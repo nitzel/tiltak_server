@@ -2,6 +2,7 @@
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::io::{Read, Write};
+use std::time::Duration;
 use std::{io, time};
 
 use board_game_traits::{Color, GameResult};
@@ -17,7 +18,7 @@ use tiltak::position::Role;
 use tiltak::position::{Komi, Move};
 use tiltak::position::{Position, Stack};
 use tiltak::ptn::{Game, PtnMove};
-use tiltak::search::MctsSetting;
+use tiltak::search::{MctsSetting, TimeControl};
 use tiltak::{position, search};
 
 #[cfg(test)]
@@ -27,6 +28,9 @@ pub mod playtak;
 pub mod tei;
 
 fn main() {
+    let x = serde_json::to_string(&TimeControl::Time(Duration::from_secs(5), Duration::from_secs(3))).unwrap();
+    println!("timecontrol={}", x);
+
     println!("play: Play against the engine through the command line");
     println!("aimatch: Watch the engine play against a very simple minmax implementation");
     println!("analyze <size>: Analyze a given position, provided from a PTN or a simple move list");

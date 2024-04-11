@@ -32,7 +32,12 @@ pub struct Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Output {
-    SuggestMoves(Vec<MoveInfo>),
+    SuggestMoves {
+        moves: Vec<MoveInfo>,
+        position: String,
+        komi: f32,
+        game_result: Option<String>,
+    },
     SuggestMove {
         pv: Vec<String>,
         score: f32,

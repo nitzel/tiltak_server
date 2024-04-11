@@ -20,12 +20,13 @@ pub async fn handle_aws_event(e: AwsWrappedEvent, c: Context) -> Result<Output, 
     } else {
         println!("moves={};komi={};", e.moves.join(" "), e.komi); // log query to AWS CloudWatch
     }
-    match e.size {
+    let response = match e.size {
         4 => handle_aws_event_generic::<4>(e, c),
         5 => handle_aws_event_generic::<5>(e, c),
         6 => handle_aws_event_generic::<6>(e, c),
         s => panic!("Unsupported board size {}", s),
-    }
+    };
+    response
 }
 
 pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result<Output, Error> {
@@ -34,6 +35,8 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
         Some(tps) => <Position<S>>::from_fen_with_komi(&tps, komi)?,
         None => <Position<S>>::start_position_with_komi(komi),
     };
+
+
     for move_string in e.moves {
         let mv = position.move_from_san(&move_string)?;
         let mut legal_moves = vec![];
@@ -44,38 +47,35 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
         position.do_move(mv);
     }
 
-    match position.game_result() {
-        Some(GameResult::Draw) => {
-            return Ok(Output::SuggestMove {
-                score: 0.5,
-                // defaults
-                pv: Vec::new(),
-                nodes: 0,
-                mem_usage: 0,
-                time_taken: Duration::default(),
-            })
+    let initial_position_tps = position.to_fen();
+
+    let game_result = position.game_result();
+    if game_result.is_some() {
+        match e.action {
+            Action::SuggestMoves => {
+                return Ok(Output::SuggestMoves {
+                    moves: vec![],
+                    position: initial_position_tps,
+                    komi: f32::from(komi.half_komi()) / 2.0,
+                    game_result: position.pgn_game_result().to_owned().and_then(|s| Some(s.to_string())),
+                });
+            },
+            Action::SuggestMove => {
+                return Ok(Output::SuggestMove {
+                    score: match game_result {
+                        Some(GameResult::Draw) => 0.5,
+                        Some(GameResult::BlackWin) => 0.0,
+                        Some(GameResult::WhiteWin) => 1.0,
+                        None => panic!("how did this happen?"),
+                    },
+                    // defaults
+                    pv: Vec::new(),
+                    nodes: 0,
+                    mem_usage: 0,
+                    time_taken: Duration::default(),
+                })
+            }
         }
-        Some(result) if result == GameResult::win_by(position.side_to_move()) => {
-            return Ok(Output::SuggestMove {
-                score: 0.0,
-                // defaults
-                pv: Vec::new(),
-                nodes: 0,
-                mem_usage: 0,
-                time_taken: Duration::default(),
-            })
-        }
-        Some(_) => {
-            return Ok(Output::SuggestMove {
-                score: 1.0,
-                // defaults
-                pv: Vec::new(),
-                nodes: 0,
-                mem_usage: 0,
-                time_taken: Duration::default(),
-            })
-        }
-        None => (),
     }
 
     let settings = if let Some(dirichlet) = e.dirichlet_noise {
@@ -97,8 +97,12 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
                     tree.search_for_time(max_time, |_| {});
 
                     let best_children = tree.best_children_info(10);
-
-                    Ok(Output::SuggestMoves(best_children))
+                    Ok(Output::SuggestMoves{
+                        moves: best_children,
+                        position: initial_position_tps,
+                        komi: f32::from(komi.half_komi()) / 2.0,
+                        game_result: None,
+                    })
                 }
                 TimeControl::FixedNodes(nodes) => {
                     let mut tree = search::MonteCarloTree::with_settings(position, settings);
@@ -109,7 +113,12 @@ pub fn handle_aws_event_generic<const S: usize>(e: Event, _c: Context) -> Result
                         };
                     }
                     let best_children = tree.best_children_info(10);
-                    Ok(Output::SuggestMoves(best_children))
+                    Ok(Output::SuggestMoves{
+                        moves: best_children,
+                        position: initial_position_tps,
+                        komi: f32::from(komi.half_komi()) / 2.0,
+                        game_result: None,
+                    })
                 }
             }
         }
